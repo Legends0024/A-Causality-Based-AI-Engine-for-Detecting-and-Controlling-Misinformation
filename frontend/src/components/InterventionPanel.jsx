@@ -1,7 +1,8 @@
 import React from 'react';
 
-const InterventionPanel = ({ interventionNodes, reductionPct, randomReduction, baselineScore, finalScore }) => {
+const InterventionPanel = ({ interventionNodes, reductionPct, randomReduction, baselineScore, finalScore, prediction }) => {
   const greaterThanRandom = reductionPct > randomReduction;
+  const isRealNews = prediction === 'non-rumour' || (!prediction && interventionNodes.length === 0);
 
   return (
     <div className="glass-card" style={{ padding: '20px' }}>
@@ -15,7 +16,18 @@ const InterventionPanel = ({ interventionNodes, reductionPct, randomReduction, b
       {/* Target nodes */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
         {interventionNodes.length === 0 ? (
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>No nodes selected.</p>
+          <div style={{
+            padding: '12px 14px',
+            background: isRealNews ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.04)',
+            borderRadius: '8px',
+            border: `1px solid ${isRealNews ? 'rgba(16,185,129,0.25)' : 'var(--border-color)'}`,
+          }}>
+            <p style={{ fontSize: '0.8rem', color: isRealNews ? 'var(--accent-emerald)' : 'var(--text-muted)', lineHeight: 1.5 }}>
+              {isRealNews
+                ? '✓ No intervention needed — content appears credible. Monitor for unusual spread velocity.'
+                : 'No high-risk nodes identified in this cascade.'}
+            </p>
+          </div>
         ) : interventionNodes.map((node, i) => (
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: '12px',

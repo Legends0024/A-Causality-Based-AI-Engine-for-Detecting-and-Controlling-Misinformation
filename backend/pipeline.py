@@ -102,17 +102,18 @@ class MisinformationPipeline:
         credible_signals = self.resources.credible_signals(text) if text.strip() else []
         if graph_origin == "generated_from_text":
             # Synthetic text graphs are scaffolding, not real propagation evidence.
-            text_probability = 0.5 + ((text_probability - 0.5) * 0.25)
-            if credible_signals and not heuristic_signals:
-                credibility_discount = min(0.16, 0.03 * len(credible_signals))
-                text_probability = max(0.05, text_probability - credibility_discount)
+            # Only apply a mild compression — do NOT discount based on credible signals alone,
+            # because fake news often mimics official/credible language on purpose.
+            text_probability = 0.5 + ((text_probability - 0.5) * 0.6)
 
         if graph_origin == "generated_from_text":
             combined_probability = (0.9 * text_probability) + (0.1 * graph_probability)
         else:
             combined_probability = (0.6 * text_probability) + (0.4 * graph_probability)
 
-        rumour_threshold = 0.62 if graph_origin == "generated_from_text" and not heuristic_signals else 0.5
+        # Use a single consistent threshold — raising it for synthetic graphs caused
+        # borderline fake news to slip through as non-rumour.
+        rumour_threshold = 0.5
         prediction = "rumour" if combined_probability >= rumour_threshold else "non-rumour"
         confidence = combined_probability if prediction == "rumour" else 1 - combined_probability
 
@@ -196,8 +197,8 @@ class MisinformationPipeline:
                 )
             return "Flag the claim for manual review and publish a corrective notice before further amplification."
         return (
-            "No aggressive containment needed. Keep the claim observable, retain provenance, "
-            "and re-run intervention only if the cascade expands."
+            "Content appears credible. No containment action required. "
+            "Monitor the cascade for unusual spread velocity and re-run if new signals emerge."
         )
 
     def _graph_depth(self, graph: nx.DiGraph, root: str) -> int:

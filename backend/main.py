@@ -153,12 +153,34 @@ def score_news(request: ScoreNewsRequest) -> dict:
     score = round(result["confidence"] * 100, 1)
     method = "pipeline_v4"
 
+    newsapi_enabled = news_lookup.get("enabled", False)
+    newsapi_matched = news_lookup.get("matched", False)
+    top_similarity = news_lookup.get("top_similarity", 0.0)
+    total_results = news_lookup.get("total_results", 0)
+    newsapi_error = news_lookup.get("error")
+
+    # ── Rule 1: No articles found on NewsAPI → mark as fake ──
+    # If NewsAPI is live (no API error) and returned zero articles,
+    # the headline has no real-world coverage — treat it as fake.
     if (
-        news_lookup.get("enabled")
-        and news_lookup.get("matched")
-        and news_lookup.get("top_similarity", 0.0) >= 0.28
+        newsapi_enabled
+        and not newsapi_error
+        and total_results == 0
+        and label == "non-rumour"
+    ):
+        label = "rumour"
+        score = max(score, 65.0)
+        method = "pipeline_v4+newsapi_no_coverage"
+
+    # ── Rule 2: Articles found with high similarity → confirm as real ──
+    # Only flip rumour → non-rumour if similarity is very high (≥ 0.55)
+    # and the model wasn't very confident it's fake (< 60%).
+    elif (
+        newsapi_enabled
+        and newsapi_matched
+        and top_similarity >= 0.55
         and label == "rumour"
-        and score < 75
+        and score < 60
     ):
         label = "non-rumour"
         score = max(score, 72.0)
@@ -174,9 +196,9 @@ def score_news(request: ScoreNewsRequest) -> dict:
         "sources": news_lookup.get("sources", []),
         "query": news_lookup.get("query", ""),
         "provider": news_lookup.get("provider", "newsapi"),
-        "total_results": news_lookup.get("total_results", 0),
+        "total_results": total_results,
         "articles": news_lookup.get("articles", []),
-        "newsapi_error": news_lookup.get("error"),
+        "newsapi_error": newsapi_error,
     }
 
 

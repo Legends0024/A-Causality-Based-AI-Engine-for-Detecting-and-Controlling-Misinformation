@@ -29,6 +29,19 @@ REAL_NEWS_EXAMPLES = [
     "x community notes flags misleading political claims during election season",
     "supporters criticize government post on x after leader praises reformer",
     "news report says opposition leaders troll minister after public statement",
+    "rbi holds repo rate at 6.5 percent in monetary policy committee meeting",
+    "sensex gains 450 points as it stocks rally on positive global cues",
+    "india and us sign bilateral trade agreement worth 50 billion dollars",
+    "supreme court issues notice to government on electoral bonds case",
+    "parliament passes new data protection bill after months of debate",
+    "government announces 5 percent hike in minimum support price for wheat",
+    "election commission announces lok sabha election schedule for april",
+    "india gdp growth rate estimated at 6.8 percent for current fiscal year",
+    "rupee strengthens to 83 per dollar after positive trade data",
+    "pm modi inaugurates new metro line in delhi connecting airport",
+    "rbi governor says inflation is within target band of 4 percent",
+    "india launches satellite successfully from sriharikota space centre",
+    "government extends deadline for income tax filing by two weeks",
 ]
 
 FAKE_NEWS_EXAMPLES = [
@@ -40,6 +53,22 @@ FAKE_NEWS_EXAMPLES = [
     "sensex crashes 9000 points in one day biggest stock collapse in history",
     "india gdp grows 95 percent this quarter shocking economists worldwide",
     "government admits to faking moon landing in classified file leaked",
+    "pm modi announces india gdp grew 85 percent shocking world economists",
+    "breaking rbi cuts interest rates by 40 percent overnight emergency move",
+    "secret document leaked government hiding alien contact since 1947",
+    "bill gates admits microchips in vaccines control population exposed",
+    "india becomes worlds richest country overnight shocking announcement",
+    "sensex rises 15000 points in single session historic market surge",
+    "scientist exposes truth about 5g towers causing cancer must share",
+    "government bans opposition party in secret midnight session leaked",
+    "rupee crashes to 500 per dollar rbi emergency meeting called",
+    "pm announces free electricity for all indians starting tomorrow",
+    "shocking nasa admits moon landing was filmed in hollywood studio",
+    "breaking news celebrity found dead in mysterious circumstances confirmed",
+    "they dont want you to know this miracle cure suppressed by pharma",
+    "must watch before they delete this proof of government conspiracy",
+    "india launches nuclear strike confirmed sources say breaking",
+    "rbi prints 10 lakh crore overnight causing hyperinflation experts warn",
 ]
 
 SUSPICIOUS_PHRASES = [
@@ -51,6 +80,18 @@ SUSPICIOUS_PHRASES = [
     "must watch before removed",
     "they are hiding it",
     "confirmed sources say",
+    "shocking truth",
+    "exposed truth",
+    "must share",
+    "before they delete",
+    "suppressed by",
+    "big pharma",
+    "they dont want you to know",
+    "leaked document",
+    "classified file leaked",
+    "proof of",
+    "wake up people",
+    "mainstream media wont tell",
 ]
 
 CREDIBLE_NEWS_SIGNALS = [
@@ -461,6 +502,22 @@ class BackendResources:
             if signal not in unique_signals:
                 unique_signals.append(signal)
         return unique_signals
+
+    def is_specific_event_claim(self, text: str) -> bool:
+        """
+        Returns True if the text looks like a specific real-world event claim
+        (earthquake, explosion, death, attack, crash, etc.) that should be
+        verifiable via NewsAPI. Used to penalise unverified event claims.
+        """
+        lowered = text.lower()
+        event_keywords = [
+            r"\bearthquake\b", r"\bquake\b", r"\bexplosion\b", r"\bblast\b",
+            r"\battack\b", r"\bterror\b", r"\bkilled\b", r"\bdead\b", r"\bdeath\b",
+            r"\bcrash\b", r"\bcollapse\b", r"\bflood\b", r"\bfire\b", r"\bstrike\b",
+            r"\bassassinated\b", r"\barrested\b", r"\bshot\b", r"\bbomb\b",
+            r"\btsunami\b", r"\bcyclone\b", r"\bhurricane\b", r"\btornado\b",
+        ]
+        return any(re.search(p, lowered) for p in event_keywords)
 
     def has_implausible_number(self, text: str) -> bool:
         checks = [

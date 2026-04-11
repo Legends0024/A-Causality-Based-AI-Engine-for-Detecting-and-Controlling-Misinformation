@@ -430,6 +430,7 @@ const Dashboard = () => {
                   randomReduction={results.random_reduction}
                   baselineScore={results.baseline_score}
                   finalScore={results.final_score}
+                  prediction={results.label}
                 />
                 <ScoreChart scoreHistory={results.score_history} />
               </div>
