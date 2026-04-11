@@ -1,4 +1,4 @@
-const API = import.meta.env.VITE_API_URL || "http://localhost:8013"
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
 export const fetchCascades = () => fetch(`${API}/api/cascades`).then(r => r.json())
 export const fetchStats    = () => fetch(`${API}/api/stats`).then(r => r.json())
