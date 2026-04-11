@@ -25,14 +25,23 @@ def get_spread_score(G, root, model, device, removed_nodes=set()):
     if len(subgraph.edges) == 0:
         return 0.0
     features = []
-    for node in nodes_to_keep:
+    # Create mapping from original node ID to 0...N-1
+    node_mapping = {}
+    for idx, node in enumerate(nodes_to_keep):
         feat = extract_node_features(subgraph, node, root)
         features.append(feat)
+        node_mapping[node] = idx
+        
     x = torch.tensor(features, dtype=torch.float).to(device)
-    edge_list = list(subgraph.edges)
+    
+    edge_list = []
+    for u, v in subgraph.edges:
+        edge_list.append([node_mapping[u], node_mapping[v]])
+        
     if not edge_list:
         return 0.0
     edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous().to(device)
+    
     model.eval()
     with torch.no_grad():
         out = model(x, edge_index)
