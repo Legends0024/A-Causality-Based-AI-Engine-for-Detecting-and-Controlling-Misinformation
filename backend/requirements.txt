@@ -1,8 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+--find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
+
+torch==2.3.0
+torch-geometric==2.5.3
+torch-scatter==2.1.2
+torch-sparse==0.6.18
 fastapi==0.111.0
 uvicorn==0.29.0
 pydantic==2.7.1
-torch==2.3.0
-torch-geometric==2.5.3
 networkx==3.3
 numpy==1.26.4
 scikit-learn==1.4.2
