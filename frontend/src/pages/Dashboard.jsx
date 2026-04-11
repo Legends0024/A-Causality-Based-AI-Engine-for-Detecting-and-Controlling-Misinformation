@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { fetchCascades, analyzeCascade, scoreNews } from '../api.js';
+import React, { useEffect, useState, useCallback } from 'react';
+import { fetchCascades, analyzeCascade, scoreNews, fetchHealth, fetchWorldHeadlines } from '../api.js';
 import CascadeList from '../components/CascadeList.jsx';
 import StatsCards from '../components/StatsCards.jsx';
 import ScoreChart from '../components/ScoreChart.jsx';
@@ -12,55 +12,88 @@ const Dashboard = () => {
   const [k, setK] = useState(5);
   const [results, setResults] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  
-  // Raw Data Input State
-  const [newsText, setNewsText] = useState("");
+  const [analyzeError, setAnalyzeError] = useState(null);
+  const [backendStatus, setBackendStatus] = useState(null); // 'ok' | 'error'
+
+  const [newsText, setNewsText] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [scanError, setScanError] = useState(null);
 
-  const loadCascades = () => {
-    fetchCascades().then(data => setCascades(data.cascades)).catch(err => console.error("Error fetching cascades:", err));
-  };
+  const [worldHeadlines, setWorldHeadlines] = useState([]);
+  const [worldLoading, setWorldLoading] = useState(false);
+  const [worldError, setWorldError] = useState(null);
+  const [worldProvider, setWorldProvider] = useState(null);
 
-  useEffect(() => {
-    loadCascades();
+  const loadWorldHeadlines = useCallback(() => {
+    setWorldLoading(true);
+    setWorldError(null);
+    fetchWorldHeadlines(28)
+      .then((data) => {
+        setWorldHeadlines(data.articles || []);
+        setWorldProvider(data.provider || null);
+      })
+      .catch((err) => {
+        setWorldHeadlines([]);
+        setWorldProvider(null);
+        setWorldError(err.message || 'Could not load headlines');
+      })
+      .finally(() => setWorldLoading(false));
   }, []);
 
-  const handleAnalyze = () => {
-    if (selectedCascade !== null) {
-      setIsAnalyzing(true);
-      analyzeCascade(selectedCascade, k).then(res => {
-        setResults(res);
-      }).catch(err => {
-        console.error("Analysis failed:", err);
-      }).finally(() => {
-        setIsAnalyzing(false);
-      });
+  // Check backend health on mount
+  useEffect(() => {
+    fetchHealth()
+      .then(d => setBackendStatus(d.status === 'ok' ? 'ok' : 'error'))
+      .catch(() => setBackendStatus('error'));
+  }, []);
+
+  useEffect(() => {
+    if (backendStatus === 'ok') loadWorldHeadlines();
+  }, [backendStatus, loadWorldHeadlines]);
+
+  const loadCascades = useCallback(() => {
+    fetchCascades()
+      .then(data => setCascades(data.cascades || []))
+      .catch(err => console.error('Error fetching cascades:', err));
+  }, []);
+
+  useEffect(() => { loadCascades(); }, [loadCascades]);
+
+  const handleAnalyze = async () => {
+    if (selectedCascade === null) return;
+    setIsAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const res = await analyzeCascade(selectedCascade, k);
+      setResults(res);
+    } catch (err) {
+      setAnalyzeError(err.message || 'Analysis failed. Is the backend running?');
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
-  const handleScanNews = () => {
+  const handleScanNews = async () => {
     if (!newsText.trim()) return;
     setIsScanning(true);
     setScanResult(null);
     setScanError(null);
-    setResults(null); 
-    
-    scoreNews(newsText).then(data => {
+    setResults(null);
+    try {
+      const data = await scoreNews(newsText);
       if (data.status === 'error') {
         setScanError(data.message);
       } else {
         setScanResult(data);
-        loadCascades(); 
+        loadCascades();
         setSelectedCascade(data.cascade_id);
-        // Don't clear text - keep it visible so user can see which news gave which result
       }
-    }).catch(err => {
-      setScanError("Failed to connect to the global search engine.");
-    }).finally(() => {
+    } catch (err) {
+      setScanError(err.message || 'Failed to connect to backend.');
+    } finally {
       setIsScanning(false);
-    });
+    }
   };
 
   const handleMockImageUpload = (e) => {
@@ -72,210 +105,345 @@ const Dashboard = () => {
     }
   };
 
+  const clearScan = () => {
+    setNewsText('');
+    setScanResult(null);
+    setScanError(null);
+  };
+
+  const isFake = scanResult?.label === 'rumour';
+
   return (
     <div className="dashboard-layout">
-      {/* Sidebar */}
+
+      {/* ── Sidebar ── */}
       <div className="sidebar glass-panel" style={{ borderTop: 'none', borderBottom: 'none', borderLeft: 'none', borderRadius: 0 }}>
+
         <div className="sidebar-header">
-          <h2 className="text-emerald" style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Control Panel</h2>
-          <p className="text-muted" style={{ fontSize: '0.875rem' }}>Select a cascade and configure intervention parameters.</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+            <h2 className="text-emerald" style={{ fontSize: '1.4rem' }}>Control Panel</h2>
+            {backendStatus && (
+              <span style={{
+                fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px',
+                background: backendStatus === 'ok' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                color: backendStatus === 'ok' ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                border: `1px solid ${backendStatus === 'ok' ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+              }}>
+                {backendStatus === 'ok' ? '● Live' : '● Offline'}
+              </span>
+            )}
+          </div>
+          <p className="text-muted" style={{ fontSize: '0.8rem' }}>
+            Classify news, select a cascade, and run causal intervention.
+          </p>
         </div>
-        
-        <div className="sidebar-content" style={{ padding: '0 24px 24px 24px' }}>
-          
-          {/* New Raw Data / LLM Scorer Module */}
-          <div style={{ marginTop: '24px', marginBottom: '32px', padding: '16px', background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-            <div className="flex justify-between items-center mb-3">
-              <div className="flex items-center gap-2">
-                <span style={{ fontSize: '1.2rem' }}>🌍</span>
-                <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Global News Scanner</h3>
+
+        <div className="sidebar-content">
+
+          {/* ── Global News Scanner ── */}
+          <div style={{ marginBottom: '28px', padding: '16px', background: 'var(--bg-card)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>🌍</span>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Global News Scanner</h3>
               </div>
-              <label style={{ cursor: 'pointer', fontSize: '0.8rem', padding: '4px 8px', background: 'var(--bg-dark)', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
-                📸 Upload Screenshot
+              <label style={{ cursor: 'pointer', fontSize: '0.75rem', padding: '4px 10px', background: 'var(--bg-dark)', borderRadius: '6px', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+                📸 Upload
                 <input type="file" accept="image/*" onChange={handleMockImageUpload} style={{ display: 'none' }} />
               </label>
             </div>
-            
-            <textarea 
+
+            <textarea
               value={newsText}
-              onChange={(e) => { setNewsText(e.target.value); setScanResult(null); setScanError(null); }}
-              placeholder="Paste text or type >4 words to run a live global web fact-check..."
-              style={{ width: '100%', height: '80px', background: 'rgba(0,0,0,0.3)', border: `1px solid ${scanResult ? (scanResult.label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)') : 'var(--border-color)'}`, borderRadius: '8px', padding: '10px', color: 'white', fontFamily: 'inherit', resize: 'none', marginBottom: '6px' }}
+              onChange={e => { setNewsText(e.target.value); setScanResult(null); setScanError(null); }}
+              placeholder="Paste a news headline or claim to fact-check in real time..."
+              rows={3}
+              style={{
+                width: '100%', background: 'rgba(0,0,0,0.3)', resize: 'vertical',
+                border: `1px solid ${scanResult ? (isFake ? 'var(--accent-rose)' : 'var(--accent-emerald)') : 'var(--border-color)'}`,
+                borderRadius: '8px', padding: '10px', color: 'white',
+                fontFamily: 'inherit', fontSize: '0.875rem', lineHeight: 1.5,
+                marginBottom: '8px', outline: 'none',
+              }}
             />
-            {newsText && (
-              <div className="flex justify-end" style={{ marginBottom: '8px' }}>
-                <button onClick={() => { setNewsText(""); setScanResult(null); setScanError(null); }} style={{ fontSize: '0.75rem', padding: '2px 10px', background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-muted)', cursor: 'pointer' }}>
-                  Clear
+
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+              <button
+                className="btn-outline"
+                style={{ flex: 1, borderColor: 'var(--accent-indigo)', color: 'white', padding: '8px 12px', fontSize: '0.85rem' }}
+                onClick={handleScanNews}
+                disabled={isScanning || !newsText.trim()}
+              >
+                {isScanning ? '⏳ Checking...' : '🔍 Fact-Check Live'}
+              </button>
+              {newsText && (
+                <button onClick={clearScan} className="btn-outline" style={{ padding: '8px 12px', fontSize: '0.8rem' }}>
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Live world headlines — click to fact-check */}
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  Live headlines (multi-region)
+                </span>
+                <button
+                  type="button"
+                  onClick={loadWorldHeadlines}
+                  disabled={worldLoading || backendStatus !== 'ok'}
+                  className="btn-outline"
+                  style={{ padding: '4px 10px', fontSize: '0.7rem', opacity: backendStatus !== 'ok' ? 0.5 : 1 }}
+                >
+                  {worldLoading ? '…' : '↻ Refresh'}
                 </button>
               </div>
-            )}
-            
-            <button 
-              className="btn-outline" 
-              style={{ width: '100%', borderColor: 'var(--accent-indigo)', color: 'white' }}
-              onClick={handleScanNews}
-              disabled={isScanning || !newsText.trim()}
-            >
-              {isScanning ? 'Querying Global Web...' : 'Live Fact-Check & Generate'}
-            </button>
-            
-            {/* Display Error Result */}
+              {worldError && (
+                <p style={{ fontSize: '0.72rem', color: 'var(--accent-rose)', marginBottom: '6px' }}>{worldError}</p>
+              )}
+              {!worldLoading && worldProvider && (
+                <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                  Source mix: {worldProvider.replace(/\+/g, ' + ')}
+                </p>
+              )}
+              <div
+                style={{
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  background: 'rgba(0,0,0,0.25)',
+                }}
+              >
+                {worldLoading && worldHeadlines.length === 0 && (
+                  <p style={{ padding: '12px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>Loading headlines…</p>
+                )}
+                {!worldLoading && worldHeadlines.length === 0 && !worldError && backendStatus === 'ok' && (
+                  <p style={{ padding: '12px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>No headlines returned. Try Refresh.</p>
+                )}
+                {worldHeadlines.map((a, idx) => (
+                  <button
+                    key={`${a.title}-${idx}`}
+                    type="button"
+                    onClick={() => {
+                      const clean = (a.title || '').replace(/\s*[-–—]\s*[^-–—]+$/, '').trim() || a.title;
+                      setNewsText(clean);
+                      setScanResult(null);
+                      setScanError(null);
+                    }}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      fontSize: '0.72rem',
+                      lineHeight: 1.35,
+                      color: 'var(--text-secondary)',
+                      background: 'transparent',
+                      border: 'none',
+                      borderBottom: '1px solid var(--border-color)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ color: 'var(--accent-indigo)', marginRight: '6px', fontSize: '0.65rem' }}>{a.tag || '·'}</span>
+                    {a.title}
+                    <span style={{ display: 'block', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      {a.source || 'News'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Error */}
             {scanError && (
-              <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(225,29,72,0.1)', borderRadius: '8px', borderLeft: '4px solid var(--accent-rose)' }}>
-                <p style={{ fontSize: '0.875rem', color: 'var(--accent-rose)' }}>{scanError}</p>
+              <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.1)', borderRadius: '8px', borderLeft: '3px solid var(--accent-rose)', marginBottom: '8px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--accent-rose)' }}>{scanError}</p>
               </div>
             )}
 
-            {/* Display Scan Result */}
+            {/* Result */}
             {scanResult && !scanError && (
-              <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', borderLeft: `4px solid ${scanResult.label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)'}` }}>
-                <p style={{ fontSize: '0.75rem', marginBottom: '6px', color: 'var(--text-muted)', fontStyle: 'italic', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                  title={newsText}>
-                  "{newsText.length > 55 ? newsText.slice(0, 55) + '...' : newsText}"
+              <div style={{
+                padding: '12px', borderRadius: '10px',
+                background: isFake ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${isFake ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
+              }}>
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '8px', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={newsText}>
+                  "{newsText.length > 55 ? newsText.slice(0, 55) + '…' : newsText}"
                 </p>
-                <p style={{ fontSize: '0.875rem', marginBottom: '4px' }} className="text-secondary">Classification Result:</p>
-                <div className="flex justify-between items-end">
-                  <span style={{ fontWeight: 'bold', fontSize: '1.1rem', color: scanResult.label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)' }}>
-                    {scanResult.label === 'rumour' ? 'FAKE NEWS' : 'REAL NEWS'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, fontSize: '1.1rem', color: isFake ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+                    {isFake ? '🔴 FAKE NEWS' : '🟢 REAL NEWS'}
                   </span>
-                  <span className="mono" style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Score: {scanResult.score}%</span>
+                  <span className="mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    {scanResult.score}%
+                  </span>
                 </div>
-                <p style={{ fontSize: '0.75rem', marginTop: '8px', color: 'var(--accent-emerald)' }}>
-                  ✓ Web cross-reference complete.
-                </p>
-                <p style={{ fontSize: '0.75rem', marginTop: '2px', color: 'var(--accent-emerald)' }}>
-                  ✓ Cascade ID: {scanResult.cascade_id} selected
-                </p>
+                <div style={{ marginTop: '8px', fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                  <span>✓ Method: {scanResult.method || 'ml+rules'}</span>
+                  <span>✓ Cascade #{scanResult.cascade_id}</span>
+                </div>
+                {Array.isArray(scanResult.sources) && scanResult.sources.length > 0 && (
+                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    Outlets: {scanResult.sources.slice(0, 5).join(', ')}
+                  </p>
+                )}
               </div>
             )}
           </div>
 
-          <div className="mb-6">
-            <div className="flex justify-between mb-2">
-              <label style={{ fontSize: '0.875rem', fontWeight: 500 }} className="text-primary">Intervention Budget (K)</label>
-              <span className="mono text-emerald bg-emerald-glow" style={{ padding: '2px 8px', borderRadius: '12px', fontSize: '0.875rem' }}>{k}</span>
+          {/* ── Intervention Budget ── */}
+          <div style={{ marginBottom: '28px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <label style={{ fontSize: '0.875rem', fontWeight: 500 }}>Intervention Budget (K)</label>
+              <span className="mono text-emerald" style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', padding: '2px 10px', borderRadius: '999px', fontSize: '0.875rem' }}>
+                {k}
+              </span>
             </div>
             <input type="range" min="1" max="10" value={k} onChange={e => setK(parseInt(e.target.value))} />
-            <p className="mt-2 text-muted" style={{ fontSize: '0.75rem' }}>Max number of nodes to debunk.</p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+              Max nodes the optimizer is allowed to suppress.
+            </p>
           </div>
 
+          {/* ── Cascade List ── */}
           <CascadeList cascades={cascades} selectedId={selectedCascade} onSelect={setSelectedCascade} />
         </div>
-        
-        <div style={{ padding: '24px', borderTop: '1px solid var(--border-color)' }}>
-          <button 
-            className="btn-primary" 
-            style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
-            onClick={handleAnalyze} 
+
+        <div style={{ padding: '20px 24px', borderTop: '1px solid var(--border-color)' }}>
+          <button
+            className="btn-primary"
+            style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', padding: '12px' }}
+            onClick={handleAnalyze}
             disabled={selectedCascade === null || isAnalyzing}
           >
-            {isAnalyzing ? (
-              <>Running Optimizer...</>
-            ) : (
-              <>Run Intervention</>
-            )}
+            {isAnalyzing ? '⏳ Running Optimizer…' : '🎯 Run Intervention'}
           </button>
+          {analyzeError && (
+            <p style={{ fontSize: '0.75rem', color: 'var(--accent-rose)', marginTop: '8px', textAlign: 'center' }}>
+              {analyzeError}
+            </p>
+          )}
         </div>
       </div>
 
-      {/* Main Panel */}
+      {/* ── Main Content ── */}
       <div className="main-content">
-        {!results && (
-          <div className="flex flex-col items-center justify-center p-6 text-center" style={{ height: '100%', opacity: 0.6 }}>
-            <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
-              <span style={{ fontSize: '24px' }}>🕸️</span>
-            </div>
-            <h3 className="text-secondary mb-2">No Analysis Results</h3>
-            <p className="text-muted" style={{ maxWidth: '400px' }}>Select a cascade from the sidebar and click 'Run Intervention' to see the causal impact.</p>
+
+        {/* Empty state */}
+        {!results && !isAnalyzing && (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
+            <div style={{ fontSize: '4rem', marginBottom: '16px' }}>🕸️</div>
+            <h3 style={{ marginBottom: '8px', color: 'var(--text-secondary)' }}>No Analysis Yet</h3>
+            <p style={{ color: 'var(--text-muted)', maxWidth: '360px', textAlign: 'center', lineHeight: 1.6 }}>
+              Paste a news headline in the scanner, or select a cascade from the sidebar, then click <strong>Run Intervention</strong>.
+            </p>
           </div>
         )}
 
-        {results && (
-          <div className="flex flex-col gap-6" style={{ maxWidth: '1400px', margin: '0 auto' }}>
-            <div className="flex items-center justify-between">
+        {/* Loading state */}
+        {isAnalyzing && (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
+            <div style={{ width: '48px', height: '48px', border: '3px solid var(--border-color)', borderTop: '3px solid var(--accent-emerald)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <p style={{ color: 'var(--text-secondary)' }}>Running causal intervention optimizer…</p>
+          </div>
+        )}
+
+        {/* Results */}
+        {results && !isAnalyzing && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
               <div>
-                <h2 style={{ fontSize: '1.75rem', marginBottom: '8px' }}>Intervention Analysis</h2>
-                <div className="flex gap-2">
-                  <span className={`chip mt-2 ${results.label === 'rumour' ? 'chip-rose' : 'chip-indigo'}`}>
-                    {results.label.toUpperCase()}
+                <h2 style={{ fontSize: '1.6rem', marginBottom: '8px', fontWeight: 700 }}>Intervention Analysis</h2>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <span className={`chip ${results.label === 'rumour' ? 'chip-rose' : 'chip-indigo'}`}>
+                    {results.label === 'rumour' ? '🔴 FAKE NEWS' : '🟢 REAL NEWS'}
                   </span>
-                  <span className="chip chip-emerald mt-2">ID: {results.cascade_id}</span>
+                  <span className="chip chip-emerald">Cascade #{results.cascade_id}</span>
+                  <span className="chip chip-amber">GAT score: {(results.graph_fake_prob * 100).toFixed(1)}%</span>
                 </div>
               </div>
+              <button className="btn-outline" onClick={() => setResults(null)} style={{ fontSize: '0.8rem', padding: '6px 14px' }}>
+                ✕ Clear
+              </button>
             </div>
 
-            <StatsCards 
-              label={results.label} 
-              nodes={results.nodes} 
-              reductionPct={results.reduction_pct} 
-              improvement={results.reduction_pct - results.random_reduction} 
+            <StatsCards
+              label={results.label}
+              nodes={results.nodes}
+              reductionPct={results.reduction_pct}
+              improvement={results.reduction_pct - results.random_reduction}
+              graphFakeProb={results.graph_fake_prob}
             />
-            
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 3fr)', gap: '24px' }}>
-              
-              <div className="flex flex-col gap-6">
-                <InterventionPanel 
-                  interventionNodes={results.intervention_nodes} 
-                  reductionPct={results.reduction_pct} 
-                  randomReduction={results.random_reduction} 
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,3fr)', gap: '20px' }}>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <InterventionPanel
+                  interventionNodes={results.intervention_nodes}
+                  reductionPct={results.reduction_pct}
+                  randomReduction={results.random_reduction}
+                  baselineScore={results.baseline_score}
+                  finalScore={results.final_score}
                 />
                 <ScoreChart scoreHistory={results.score_history} />
               </div>
 
-              {/* Side-by-side graphs */}
-              <div className="glass-card p-4" style={{ display: 'flex', flexDirection: 'column' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', flex: 1 }}>
-                  
-                  {/* Before */}
-                  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '400px' }}>
-                    <div className="text-center mb-4">
-                      <h3 style={{ fontSize: '1.1rem', fontWeight: '500', color: 'var(--text-primary)' }}>BEFORE Intervention</h3>
-                      <p className="text-secondary" style={{ fontSize: '0.875rem' }}>{results.nodes} nodes infected | Rumour: {results.label === 'rumour' ? 'FAKE NEWS' : 'REAL NEWS'}</p>
+              {/* Graph panel */}
+              <div className="glass-card" style={{ padding: '20px', position: 'sticky', top: '20px', alignSelf: 'start' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', height: '100%' }}>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', minHeight: '420px' }}>
+                    <div style={{ textAlign: 'center', marginBottom: '12px' }}>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>BEFORE Intervention</h3>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {results.nodes} nodes · Baseline score: {results.baseline_score.toFixed(3)}
+                      </p>
                     </div>
-                    <div style={{ flex: 1, background: 'var(--bg-dark)', borderRadius: 'var(--radius-md)', padding: '10px' }}>
+                    <div style={{ height: '460px', background: 'var(--bg-dark)', borderRadius: '10px', padding: '8px', overflow: 'hidden' }}>
                       <GraphViz data={results.graph_before} />
                     </div>
                   </div>
 
-                  {/* After */}
-                  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '400px' }}>
-                    <div className="text-center mb-4">
-                      <h3 style={{ fontSize: '1.1rem', fontWeight: '500', color: 'var(--text-primary)' }}>AFTER Intervention ({k} nodes debunked)</h3>
-                      <p className="text-secondary" style={{ fontSize: '0.875rem' }}>Spread reduced by {results.reduction_pct.toFixed(1)}%</p>
+                  <div style={{ display: 'flex', flexDirection: 'column', minHeight: '420px' }}>
+                    <div style={{ textAlign: 'center', marginBottom: '12px' }}>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>AFTER Intervention ({k} nodes)</h3>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--accent-emerald)' }}>
+                        Spread reduced {results.reduction_pct.toFixed(1)}%
+                      </p>
                     </div>
-                    <div style={{ flex: 1, background: 'var(--bg-dark)', borderRadius: 'var(--radius-md)', padding: '10px' }}>
+                    <div style={{ height: '460px', background: 'var(--bg-dark)', borderRadius: '10px', padding: '8px', overflow: 'hidden' }}>
                       <GraphViz data={results.graph_after} />
                     </div>
                   </div>
 
                 </div>
 
-                {/* Shared Legend */}
-                <div className="flex justify-center gap-6 mt-6 pt-4" style={{ borderTop: '1px solid var(--border-color)' }}>
-                  <div className="flex items-center gap-2">
-                    <span style={{ width: '20px', height: '6px', borderRadius: '2px', background: 'var(--accent-amber)' }}></span>
-                    <span className="text-muted" style={{ fontSize: '0.875rem' }}>Source tweet</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span style={{ width: '20px', height: '6px', borderRadius: '2px', background: 'var(--accent-rose)' }}></span>
-                    <span className="text-muted" style={{ fontSize: '0.875rem' }}>Infected node</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span style={{ width: '20px', height: '6px', borderRadius: '2px', background: 'var(--accent-emerald)' }}></span>
-                    <span className="text-muted" style={{ fontSize: '0.875rem' }}>Debunked (intervention)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span style={{ width: '20px', height: '6px', borderRadius: '2px', background: '#1e293b' }}></span>
-                    <span className="text-muted" style={{ fontSize: '0.875rem' }}>Contained (blocked)</span>
-                  </div>
+                {/* Legend */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '24px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)', flexWrap: 'wrap' }}>
+                  {[
+                    { color: 'var(--accent-amber)', label: 'Source node' },
+                    { color: 'var(--accent-rose)', label: 'Infected' },
+                    { color: 'var(--accent-emerald)', label: 'Debunked' },
+                    { color: '#1e293b', label: 'Contained' },
+                  ].map(({ color, label }) => (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ width: '20px', height: '5px', borderRadius: '2px', background: color, display: 'inline-block' }} />
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{label}</span>
+                    </div>
+                  ))}
                 </div>
-
               </div>
-              
+
             </div>
           </div>
         )}
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 };

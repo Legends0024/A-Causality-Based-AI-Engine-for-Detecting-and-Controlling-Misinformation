@@ -1,37 +1,45 @@
 import React from 'react';
 
-const StatsCards = ({ label, nodes, reductionPct, improvement }) => {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-      <div className="glass-card p-6">
-        <div className="text-muted mb-2" style={{ fontSize: '0.875rem' }}>Network Size</div>
-        <div style={{ fontSize: '2rem', fontWeight: 600 }}>{nodes}</div>
-        <div className="text-emerald mt-2" style={{ fontSize: '0.875rem' }}>Targetable Nodes</div>
-      </div>
-      
-      <div className="glass-card p-6">
-        <div className="text-muted mb-2" style={{ fontSize: '0.875rem' }}>Label Status</div>
-        <div style={{ fontSize: '2rem', fontWeight: 600, color: label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)', textTransform: 'capitalize' }}>
-          {label}
-        </div>
-        <div className="text-secondary mt-2" style={{ fontSize: '0.875rem' }}>Detected category</div>
-      </div>
-      
-      <div className="glass-card p-6" style={{ position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', top: '-10px', right: '-10px', width: '50px', height: '50px', background: 'var(--accent-emerald-glow)', filter: 'blur(20px)' }}></div>
-        <div className="text-muted mb-2" style={{ fontSize: '0.875rem' }}>Threat Reduction</div>
-        <div className="text-emerald" style={{ fontSize: '2rem', fontWeight: 600 }}>{reductionPct.toFixed(1)}%</div>
-        <div className="text-secondary mt-2" style={{ fontSize: '0.875rem' }}>Spread probability drop</div>
-      </div>
-      
-      <div className="glass-card p-6" style={{ position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', top: '-10px', right: '-10px', width: '50px', height: '50px', background: 'rgba(99, 102, 241, 0.2)', filter: 'blur(20px)' }}></div>
-        <div className="text-muted mb-2" style={{ fontSize: '0.875rem' }}>AI Advantage</div>
-        <div className="text-indigo" style={{ fontSize: '2rem', fontWeight: 600 }}>+{improvement.toFixed(1)}%</div>
-        <div className="text-secondary mt-2" style={{ fontSize: '0.875rem' }}>vs random targeting</div>
-      </div>
-    </div>
-  );
-};
+const Card = ({ label, value, sub, color = 'var(--text-primary)', glow }) => (
+  <div className="glass-card" style={{ padding: '20px 24px', position: 'relative', overflow: 'hidden' }}>
+    {glow && (
+      <div style={{ position: 'absolute', top: -10, right: -10, width: 50, height: 50, background: glow, filter: 'blur(20px)', borderRadius: '50%' }} />
+    )}
+    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+    <div style={{ fontSize: '1.9rem', fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
+    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '6px' }}>{sub}</div>
+  </div>
+);
+
+const StatsCards = ({ label, nodes, reductionPct, improvement, graphFakeProb }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+    <Card
+      label="Network Size"
+      value={nodes}
+      sub="Targetable nodes"
+      color="var(--text-primary)"
+    />
+    <Card
+      label="Classification"
+      value={label === 'rumour' ? 'FAKE' : 'REAL'}
+      sub={`NLP + rules + web check`}
+      color={label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)'}
+    />
+    <Card
+      label="Spread Reduced"
+      value={`${reductionPct.toFixed(1)}%`}
+      sub="vs baseline cascade"
+      color="var(--accent-emerald)"
+      glow="rgba(16,185,129,0.3)"
+    />
+    <Card
+      label="AI Advantage"
+      value={`+${improvement.toFixed(1)}%`}
+      sub="vs random targeting"
+      color="var(--accent-indigo)"
+      glow="rgba(99,102,241,0.25)"
+    />
+  </div>
+);
 
 export default StatsCards;
