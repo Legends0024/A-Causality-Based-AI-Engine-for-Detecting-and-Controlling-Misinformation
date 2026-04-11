@@ -34,8 +34,10 @@ Backend (Web Service, e.g. Render — see `render.yaml`):
 - Root directory: backend
 - Build: pip install -r requirements.txt
 - Start: uvicorn main:app --host 0.0.0.0 --port $PORT
-- Python version: 3.11
+- Python version: 3.10.20
 - Set `NEWSAPI_KEY` in the host’s environment for live NewsAPI + headline feed.
+
+Note: the backend deploy uses `torch` + `torch-geometric` only. PyG's optional compiled extensions (`torch-scatter`, `torch-sparse`) are intentionally omitted from the hosted requirements to avoid Linux source-build failures on Render for this project's current inference path.
 
 Frontend (e.g. Vercel):
 - Root directory: frontend
