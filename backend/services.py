@@ -22,6 +22,10 @@ REAL_NEWS_EXAMPLES = [
     "nasa confirms successful mars rover landing",
     "india signs trade agreement with gulf countries",
     "apple reports record quarterly revenue driven by iphone sales",
+    "pm narendra modi addresses parliament on social justice and reservation",
+    "x community notes flags misleading political claims during election season",
+    "supporters criticize government post on x after leader praises reformer",
+    "news report says opposition leaders troll minister after public statement",
 ]
 
 FAKE_NEWS_EXAMPLES = [
@@ -44,6 +48,26 @@ SUSPICIOUS_PHRASES = [
     "must watch before removed",
     "they are hiding it",
     "confirmed sources say",
+]
+
+CREDIBLE_NEWS_SIGNALS = [
+    "prime minister",
+    "pm ",
+    "narendra modi",
+    "parliament",
+    "minister",
+    "government",
+    "community notes",
+    "x ",
+    " x's",
+    "court",
+    "election",
+    "official",
+    "statement",
+    "reported",
+    "according to",
+    "trade agreement",
+    "policy",
 ]
 
 
@@ -156,6 +180,7 @@ class BackendResources:
             graph = nx.DiGraph(graph)
         node_mapping = {node: str(node) for node in graph.nodes}
         graph = nx.relabel_nodes(graph, node_mapping, copy=True)
+        graph.graph["origin"] = "dataset_cascade"
         root = str(root)
         if root not in graph.nodes:
             root = next(iter(graph.nodes), "claim_root")
@@ -168,6 +193,7 @@ class BackendResources:
         graphs: list[tuple[nx.DiGraph, str, str]] = []
         for index in range(6):
             graph = nx.DiGraph()
+            graph.graph["origin"] = "dummy_dataset"
             root = "claim_root"
             graph.add_node(root)
             previous = root
@@ -200,6 +226,19 @@ class BackendResources:
             signals.append("viral_amplification_language")
         return signals
 
+    def credible_signals(self, text: str) -> list[str]:
+        lowered = f" {text.lower()} "
+        signals = [phrase.strip() for phrase in CREDIBLE_NEWS_SIGNALS if phrase in lowered]
+        if re.search(r"\b(pm|president|minister|government|court|parliament)\b", lowered):
+            signals.append("institutional_headline_pattern")
+        if re.search(r"\b(troll|criticize|hails|addresses|flags)\b", lowered):
+            signals.append("standard_political_news_verb")
+        unique_signals: list[str] = []
+        for signal in signals:
+            if signal not in unique_signals:
+                unique_signals.append(signal)
+        return unique_signals
+
     def has_implausible_number(self, text: str) -> bool:
         checks = [
             (r"sensex rises (\d{4,}) points", 2500),
@@ -218,6 +257,7 @@ class BackendResources:
     def build_graph_from_input(self, text: str | None, graph_data) -> tuple[nx.DiGraph, str]:
         if graph_data is not None and graph_data.nodes:
             graph = nx.DiGraph()
+            graph.graph["origin"] = "provided_graph"
             for node in graph_data.nodes:
                 graph.add_node(str(node.id), features=node.features, **node.metadata)
             for edge in graph_data.edges:
@@ -248,6 +288,7 @@ class BackendResources:
 
         root = "claim_root"
         graph = nx.DiGraph()
+        graph.graph["origin"] = "generated_from_text"
         graph.add_node(root)
         if not content_tokens:
             content_tokens = ["claim", "signal"]

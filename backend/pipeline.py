@@ -75,6 +75,7 @@ class MisinformationPipeline:
 
     def _run_detection(self, text: str, graph: nx.DiGraph, root: str) -> DetectionResult:
         model_handle = self.resources.get_model()
+        graph_origin = graph.graph.get("origin", "unknown")
         graph_probability = get_graph_fake_probability(
             graph,
             root,
@@ -88,21 +89,37 @@ class MisinformationPipeline:
         if heuristic_signals:
             evidence.extend(heuristic_signals)
 
-        if graph.number_of_nodes() >= 6 and graph.out_degree(root) >= 2:
+        if graph_origin != "generated_from_text" and graph.number_of_nodes() >= 6 and graph.out_degree(root) >= 2:
             evidence.append("high_initial_cascade_branching")
-        if graph.number_of_edges() > graph.number_of_nodes():
+        if graph_origin != "generated_from_text" and graph.number_of_edges() > graph.number_of_nodes():
             evidence.append("dense_propagation_pattern")
 
         if heuristic_signals:
             heuristic_boost = min(0.2, 0.06 * len(heuristic_signals))
             text_probability = min(0.99, text_probability + heuristic_boost)
 
-        combined_probability = (0.6 * text_probability) + (0.4 * graph_probability)
-        prediction = "rumour" if combined_probability >= 0.5 else "non-rumour"
+        credible_signals = self.resources.credible_signals(text) if text.strip() else []
+        if graph_origin == "generated_from_text":
+            # Synthetic text graphs are scaffolding, not real propagation evidence.
+            text_probability = 0.5 + ((text_probability - 0.5) * 0.25)
+            if credible_signals and not heuristic_signals:
+                credibility_discount = min(0.16, 0.03 * len(credible_signals))
+                text_probability = max(0.05, text_probability - credibility_discount)
+
+        if graph_origin == "generated_from_text":
+            combined_probability = (0.9 * text_probability) + (0.1 * graph_probability)
+        else:
+            combined_probability = (0.6 * text_probability) + (0.4 * graph_probability)
+
+        rumour_threshold = 0.62 if graph_origin == "generated_from_text" and not heuristic_signals else 0.5
+        prediction = "rumour" if combined_probability >= rumour_threshold else "non-rumour"
         confidence = combined_probability if prediction == "rumour" else 1 - combined_probability
 
         if not evidence:
-            evidence.append("no_strong_lexical_red_flags_detected")
+            if credible_signals:
+                evidence.append("headline_matches_standard_news_style")
+            else:
+                evidence.append("no_strong_lexical_red_flags_detected")
 
         return DetectionResult(
             prediction=prediction,
@@ -121,12 +138,13 @@ class MisinformationPipeline:
         detection: DetectionResult,
     ) -> list[str]:
         factors = list(detection.evidence)
+        graph_origin = graph.graph.get("origin", "unknown")
         depth = self._graph_depth(graph, root)
-        if depth >= 4:
+        if graph_origin != "generated_from_text" and depth >= 4:
             factors.append("deep_cascade_structure")
-        if graph.number_of_nodes() >= 8:
+        if graph_origin != "generated_from_text" and graph.number_of_nodes() >= 8:
             factors.append("wide_exposure_surface")
-        if detection.graph_fake_probability >= 0.65:
+        if graph_origin != "generated_from_text" and detection.graph_fake_probability >= 0.65:
             factors.append("gnn_detected_high_graph_risk")
         if text and detection.text_fake_probability >= 0.65:
             factors.append("text_classifier_detected_misinformation_style")
