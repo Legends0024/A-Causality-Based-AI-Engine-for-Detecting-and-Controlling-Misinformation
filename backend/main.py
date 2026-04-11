@@ -142,29 +142,41 @@ def stats() -> dict:
 
 @app.get("/api/world_headlines")
 def world_headlines(limit: int = 12) -> dict:
-    samples = [
-        {"title": "Federal reserve raises interest rates by 25 basis points", "source": "Sample Feed", "tag": "US"},
-        {"title": "World leaders gather for climate summit in Paris", "source": "Sample Feed", "tag": "EU"},
-        {"title": "India signs trade agreement with Gulf countries", "source": "Sample Feed", "tag": "IN"},
-        {"title": "NASA confirms successful Mars rover landing milestone", "source": "Sample Feed", "tag": "SCI"},
-        {"title": "Apple reports record quarterly revenue driven by iPhone sales", "source": "Sample Feed", "tag": "BIZ"},
-    ]
-    clipped = samples[: max(1, min(limit, len(samples)))]
-    return {"status": "ok", "provider": "sample_feed", "count": len(clipped), "articles": clipped}
+    return resources.fetch_world_headlines(limit=limit)
 
 
 @app.post("/api/score_news")
 def score_news(request: ScoreNewsRequest) -> dict:
     result = pipeline.analyze(AnalyzeRequest(text=request.news_text, k=3)).model_dump()
+    news_lookup = resources.lookup_news(request.news_text, page_size=5)
     label = result["prediction"]
+    score = round(result["confidence"] * 100, 1)
+    method = "pipeline_v4"
+
+    if (
+        news_lookup.get("enabled")
+        and news_lookup.get("matched")
+        and news_lookup.get("top_similarity", 0.0) >= 0.28
+        and label == "rumour"
+        and score < 75
+    ):
+        label = "non-rumour"
+        score = max(score, 72.0)
+        method = "pipeline_v4+newsapi_match"
+
     cascade_id = _pick_cascade_id(label)
     return {
         "status": "success",
         "label": label,
-        "score": round(result["confidence"] * 100, 1),
+        "score": score,
         "cascade_id": cascade_id,
-        "method": "pipeline_v4",
-        "sources": [],
+        "method": method,
+        "sources": news_lookup.get("sources", []),
+        "query": news_lookup.get("query", ""),
+        "provider": news_lookup.get("provider", "newsapi"),
+        "total_results": news_lookup.get("total_results", 0),
+        "articles": news_lookup.get("articles", []),
+        "newsapi_error": news_lookup.get("error"),
     }
 
 

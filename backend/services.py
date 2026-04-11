@@ -1,11 +1,14 @@
+import os
 import pickle
 import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import networkx as nx
 import torch
+from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
@@ -70,6 +73,15 @@ CREDIBLE_NEWS_SIGNALS = [
     "policy",
 ]
 
+NEWSAPI_COUNTRIES = ["in", "us", "gb", "au", "ca"]
+NEWSAPI_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "of", "on", "in", "to", "for", "and", "or", "but", "with", "by",
+    "from", "at", "as", "after", "before", "into", "about", "his", "her",
+    "their", "them", "this", "that", "these", "those", "he", "she", "it",
+    "they", "pm", "says", "said",
+}
+
 
 @dataclass
 class ModelHandle:
@@ -110,6 +122,7 @@ class TextSignalScorer:
 class BackendResources:
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = Path(base_dir)
+        load_dotenv(self.base_dir / ".env")
         self.device = torch.device("cpu")
         self._model: ModelHandle | None = None
         self._graphs: list[tuple[nx.DiGraph, str, str]] | None = None
@@ -117,6 +130,7 @@ class BackendResources:
         self._model_lock = threading.Lock()
         self._graph_lock = threading.Lock()
         self.text_scorer = TextSignalScorer()
+        self.newsapi_key = os.getenv("NEWSAPI_KEY", "").strip()
 
     @property
     def model_path(self) -> Path:
@@ -216,6 +230,215 @@ class BackendResources:
             "source": self._graph_source,
             "rumour_graphs": rumour_count,
         }
+
+    def newsapi_enabled(self) -> bool:
+        return bool(self.newsapi_key)
+
+    def extract_keywords(self, text: str, max_terms: int = 8) -> str:
+        words = re.findall(r"[a-zA-Z0-9']+", text.lower())
+        terms: list[str] = []
+        for word in words:
+            normalized = word.strip("'")
+            if len(normalized) < 3 or normalized in NEWSAPI_STOPWORDS:
+                continue
+            if normalized in terms:
+                continue
+            terms.append(normalized)
+            if len(terms) >= max_terms:
+                break
+        return " ".join(terms)
+
+    def _newsapi_get(self, endpoint: str, params: dict) -> dict:
+        if not self.newsapi_key:
+            return {}
+        url = f"https://newsapi.org/v2/{endpoint}"
+        merged_params = {**params, "apiKey": self.newsapi_key}
+        with httpx.Client(timeout=12.0) as client:
+            response = client.get(url, params=merged_params)
+            response.raise_for_status()
+            return response.json()
+
+    def _headline_similarity(self, lhs: str, rhs: str) -> float:
+        left_words = set(re.findall(r"[a-zA-Z0-9]+", lhs.lower()))
+        right_words = set(re.findall(r"[a-zA-Z0-9]+", rhs.lower()))
+        if not left_words or not right_words:
+            return 0.0
+        return len(left_words & right_words) / len(left_words | right_words)
+
+    def lookup_news(self, text: str, page_size: int = 5) -> dict:
+        if not self.newsapi_enabled():
+            return {
+                "enabled": False,
+                "provider": "newsapi",
+                "query": "",
+                "total_results": 0,
+                "sources": [],
+                "articles": [],
+                "matched": False,
+                "top_similarity": 0.0,
+                "error": "NEWSAPI_KEY not configured",
+            }
+
+        query = self.extract_keywords(text)
+        if not query:
+            return {
+                "enabled": True,
+                "provider": "newsapi",
+                "query": "",
+                "total_results": 0,
+                "sources": [],
+                "articles": [],
+                "matched": False,
+                "top_similarity": 0.0,
+                "error": "No searchable keywords found",
+            }
+
+        page_size = max(1, min(page_size, 10))
+
+        def perform_search(search_query: str) -> dict:
+            return self._newsapi_get(
+                "everything",
+                {
+                    "q": search_query,
+                    "language": "en",
+                    "sortBy": "relevancy",
+                    "pageSize": page_size,
+                },
+            )
+
+        try:
+            payload = perform_search(query)
+            if not (payload.get("articles") or []):
+                fallback_query = self.extract_keywords(text, max_terms=4)
+                if fallback_query and fallback_query != query:
+                    payload = perform_search(fallback_query)
+                    query = fallback_query
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "provider": "newsapi",
+                "query": query,
+                "total_results": 0,
+                "sources": [],
+                "articles": [],
+                "matched": False,
+                "top_similarity": 0.0,
+                "error": str(exc),
+            }
+
+        normalized_articles = []
+        for article in payload.get("articles", []) or []:
+            title = (article.get("title") or "").strip()
+            similarity = self._headline_similarity(text, title)
+            normalized_articles.append(
+                {
+                    "title": title,
+                    "description": (article.get("description") or "").strip(),
+                    "url": (article.get("url") or "").strip(),
+                    "source": (article.get("source") or {}).get("name") or "Unknown",
+                    "published_at": (article.get("publishedAt") or "").strip(),
+                    "similarity": round(similarity, 3),
+                }
+            )
+        normalized_articles.sort(key=lambda item: item["similarity"], reverse=True)
+        sources = []
+        for article in normalized_articles:
+            if article["source"] not in sources:
+                sources.append(article["source"])
+
+        top_similarity = normalized_articles[0]["similarity"] if normalized_articles else 0.0
+        return {
+            "enabled": True,
+            "provider": "newsapi",
+            "query": query,
+            "total_results": payload.get("totalResults", 0) or 0,
+            "sources": sources[:5],
+            "articles": normalized_articles[: max(1, min(page_size, 10))],
+            "matched": top_similarity >= 0.2 and len(normalized_articles) > 0,
+            "top_similarity": top_similarity,
+            "error": None,
+        }
+
+    def fetch_world_headlines(self, limit: int = 12) -> dict:
+        if not self.newsapi_enabled():
+            return {
+                "status": "fallback",
+                "provider": "sample_feed",
+                "count": 5,
+                "articles": self.sample_world_headlines()[:5],
+                "error": "NEWSAPI_KEY not configured",
+            }
+
+        target_limit = max(1, min(limit, 25))
+        articles: list[dict] = []
+        seen_titles: set[str] = set()
+        per_country = max(3, min(6, target_limit // max(1, len(NEWSAPI_COUNTRIES) // 2)))
+
+        try:
+            for country in NEWSAPI_COUNTRIES:
+                payload = self._newsapi_get(
+                    "top-headlines",
+                    {
+                        "country": country,
+                        "pageSize": per_country,
+                    },
+                )
+                for article in payload.get("articles", []) or []:
+                    title = (article.get("title") or "").strip()
+                    if not title:
+                        continue
+                    lowered = title.lower()
+                    if lowered in seen_titles:
+                        continue
+                    seen_titles.add(lowered)
+                    articles.append(
+                        {
+                            "title": title,
+                            "description": (article.get("description") or "").strip(),
+                            "url": (article.get("url") or "").strip(),
+                            "source": (article.get("source") or {}).get("name") or country.upper(),
+                            "published_at": (article.get("publishedAt") or "").strip(),
+                            "tag": country.upper(),
+                        }
+                    )
+                    if len(articles) >= target_limit:
+                        break
+                if len(articles) >= target_limit:
+                    break
+        except Exception as exc:
+            return {
+                "status": "fallback",
+                "provider": "sample_feed",
+                "count": len(self.sample_world_headlines()[:target_limit]),
+                "articles": self.sample_world_headlines()[:target_limit],
+                "error": str(exc),
+            }
+
+        if not articles:
+            return {
+                "status": "fallback",
+                "provider": "sample_feed",
+                "count": len(self.sample_world_headlines()[:target_limit]),
+                "articles": self.sample_world_headlines()[:target_limit],
+                "error": "NewsAPI returned no headlines",
+            }
+
+        return {
+            "status": "ok",
+            "provider": "newsapi",
+            "count": len(articles),
+            "articles": articles[:target_limit],
+            "error": None,
+        }
+
+    def sample_world_headlines(self) -> list[dict]:
+        return [
+            {"title": "Federal reserve raises interest rates by 25 basis points", "source": "Sample Feed", "tag": "US"},
+            {"title": "World leaders gather for climate summit in Paris", "source": "Sample Feed", "tag": "EU"},
+            {"title": "India signs trade agreement with Gulf countries", "source": "Sample Feed", "tag": "IN"},
+            {"title": "NASA confirms successful Mars rover landing milestone", "source": "Sample Feed", "tag": "SCI"},
+            {"title": "Apple reports record quarterly revenue driven by iPhone sales", "source": "Sample Feed", "tag": "BIZ"},
+        ]
 
     def heuristic_signals(self, text: str) -> list[str]:
         lowered = text.lower()

@@ -35,9 +35,17 @@ Backend (Web Service, e.g. Render — see `render.yaml`):
 - Build: pip install -r requirements.txt
 - Start: uvicorn main:app --host 0.0.0.0 --port $PORT
 - Python version: 3.10.20
-- Set `NEWSAPI_KEY` in the host’s environment for live NewsAPI + headline feed.
+- Set `NEWSAPI_KEY` in the host’s environment for live NewsAPI headline lookup and verification.
 
 Note: the backend deploy uses `torch` + `torch-geometric` only. PyG's optional compiled extensions (`torch-scatter`, `torch-sparse`) are intentionally omitted from the hosted requirements to avoid Linux source-build failures on Render for this project's current inference path.
+
+Render setup for live news:
+1. Open your Render backend service.
+2. Go to `Environment`.
+3. Add `NEWSAPI_KEY` with your value from NewsAPI.org.
+4. Save changes and redeploy the service.
+
+The `render.yaml` includes `NEWSAPI_KEY` with `sync: false`, which documents the variable without committing the secret. Existing Render services still need the value added manually in the dashboard.
 
 Frontend (e.g. Vercel):
 - Root directory: frontend

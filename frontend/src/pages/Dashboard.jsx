@@ -285,10 +285,52 @@ const Dashboard = () => {
                   <span>✓ Method: {scanResult.method || 'ml+rules'}</span>
                   <span>✓ Cascade #{scanResult.cascade_id}</span>
                 </div>
+                {scanResult.query && (
+                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                    News query: <span className="mono">{scanResult.query}</span>
+                  </p>
+                )}
                 {Array.isArray(scanResult.sources) && scanResult.sources.length > 0 && (
                   <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
                     Outlets: {scanResult.sources.slice(0, 5).join(', ')}
                   </p>
+                )}
+                {scanResult.newsapi_error && (
+                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--accent-amber)', lineHeight: 1.4 }}>
+                    News lookup fallback: {scanResult.newsapi_error}
+                  </p>
+                )}
+                {Array.isArray(scanResult.articles) && scanResult.articles.length === 0 && !scanResult.newsapi_error && (
+                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    NewsAPI is connected, but it did not return matching article details for this headline.
+                  </p>
+                )}
+                {Array.isArray(scanResult.articles) && scanResult.articles.length > 0 && (
+                  <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {scanResult.articles.slice(0, 3).map((article, idx) => (
+                      <a
+                        key={`${article.url || article.title}-${idx}`}
+                        href={article.url || '#'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: 'block',
+                          textDecoration: 'none',
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          background: 'rgba(0,0,0,0.18)',
+                          border: '1px solid var(--border-color)',
+                        }}
+                      >
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-primary)', lineHeight: 1.45, fontWeight: 600 }}>
+                          {article.title}
+                        </div>
+                        <div style={{ marginTop: '4px', fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                          {article.source || 'News'}{article.published_at ? ` · ${article.published_at}` : ''}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
                 )}
               </div>
             )}

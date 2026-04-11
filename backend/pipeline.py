@@ -31,6 +31,7 @@ class MisinformationPipeline:
             "version": "4.0.0",
             "model_status": model.status,
             "weights_loaded": model.weights_loaded,
+            "newsapi_enabled": self.resources.newsapi_enabled(),
             "graph_inventory": inventory,
         }
 
