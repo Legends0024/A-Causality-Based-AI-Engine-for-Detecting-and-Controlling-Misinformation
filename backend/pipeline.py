@@ -90,12 +90,13 @@ class MisinformationPipeline:
     def _run_detection(self, text: str, causal_embedding: torch.Tensor) -> DetectionResult:
         model_handle = self.resources.get_model()
         
-        # BERT classification with causal embedding
-        verdict = model_handle.causal_transformer.predict_verdict(
-            text=text,
-            causal_vector=causal_embedding,
-            device=self.resources.device
-        )
+        # BERT classification with causal embedding (No Grad for memory efficiency)
+        with torch.no_grad():
+            verdict = model_handle.causal_transformer.predict_verdict(
+                text=text,
+                causal_vector=causal_embedding,
+                device=self.resources.device
+            )
         
         # Heuristic/GNN signals for legacy compatibility
         # We can still use the text scorer as an auxiliary signal
@@ -121,9 +122,10 @@ class MisinformationPipeline:
         if graph.number_of_nodes() < 2:
             return {"intervention_nodes": [], "score_history": [0.0], "reduction_pct": 0.0}
             
-        result = greedy_intervene(
-            graph, root, model_handle.model, self.resources.device, K=k
-        )
+        with torch.no_grad():
+            result = greedy_intervene(
+                graph, root, model_handle.model, self.resources.device, K=k
+            )
         
         if prediction in ["Credible", "Likely Credible"]:
             result["intervention_nodes"] = []

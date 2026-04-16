@@ -278,6 +278,11 @@ class BackendResources:
         return graph, str(root), normalized_label
 
     def _generate_dummy_graphs(self) -> list[tuple[nx.DiGraph, str, str]]:
+        """
+        Produce a small set of placeholder cascades for UI visualization.
+        Optimized to use fewer nodes and hops to save memory (Section 5.4 optimization).
+        """
+        MAX_NODES = 20
         graphs: list[tuple[nx.DiGraph, str, str]] = []
         for index in range(6):
             graph = nx.DiGraph()
@@ -285,12 +290,20 @@ class BackendResources:
             root = "claim_root"
             graph.add_node(root)
             previous = root
-            for hop in range(1, 6):
+            node_counter = 1
+            # 3 hops instead of 5 for memory efficiency
+            for hop in range(1, 4):
+                if node_counter >= MAX_NODES:
+                    break
                 node_id = f"n{index}_{hop}"
+                graph.add_node(node_id)
                 graph.add_edge(previous, node_id)
-                if hop % 2 == 0:
+                node_counter += 1
+                if hop % 2 == 0 and node_counter < MAX_NODES:
                     branch_id = f"n{index}_{hop}_branch"
+                    graph.add_node(branch_id)
                     graph.add_edge(previous, branch_id)
+                    node_counter += 1
                 previous = node_id
             label = "rumour" if index % 2 == 0 else "non-rumour"
             graphs.append((graph, root, label))
