@@ -118,6 +118,20 @@ class MisinformationPipeline:
         )
 
     def _run_intervention(self, graph, root, prediction, confidence, k) -> dict:
+        """
+        Intervention Engine logic.
+        Only runs the spread suppression optimizer (Greedy Intervention)
+        if the content is classified as Misinformation.
+        """
+        # If news is likely credible, we do NOT want to stop its spread.
+        if prediction in ["Credible", "Likely Credible", "Uncertain"]:
+            return {
+                "intervention_nodes": [], 
+                "score_history": [0.0], 
+                "reduction_pct": 0.0,
+                "msg": "Content satisfies credibility threshold. No spread suppression required."
+            }
+
         model_handle = self.resources.get_model()
         if graph.number_of_nodes() < 2:
             return {"intervention_nodes": [], "score_history": [0.0], "reduction_pct": 0.0}
@@ -127,10 +141,6 @@ class MisinformationPipeline:
                 graph, root, model_handle.model, self.resources.device, K=k
             )
         
-        if prediction in ["Credible", "Likely Credible"]:
-            result["intervention_nodes"] = []
-            result["reduction_pct"] = 0.0
-            
         return result
 
     def _build_intervention_message(self, detection: DetectionResult, intervention_result: dict) -> str:
