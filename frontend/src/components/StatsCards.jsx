@@ -20,10 +20,10 @@ const StatsCards = ({ label, nodes, reductionPct, improvement, graphFakeProb }) 
       color="var(--text-primary)"
     />
     <Card
-      label="Classification"
-      value={label === 'rumour' ? 'FAKE' : 'REAL'}
-      sub={`NLP + rules + web check`}
-      color={label === 'rumour' ? 'var(--accent-rose)' : 'var(--accent-indigo)'}
+      label="Veracity Verdict"
+      value={label.split(' ').pop().toUpperCase()}
+      sub={label}
+      color={['Misinformation', 'Likely Misinformation'].includes(label) ? 'var(--accent-rose)' : 'var(--accent-indigo)'}
     />
     <Card
       label="Spread Reduced"

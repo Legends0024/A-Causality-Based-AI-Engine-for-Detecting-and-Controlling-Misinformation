@@ -29,9 +29,107 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool
+from transformers import AutoModel, AutoTokenizer
+
+
+class CausalTransformer(nn.Module):
+    """
+    Causal-Augmented BERT Transformer for Misinformation Detection.
+    As described in Section 5.3 of the Project Report:
+    - Combines BERT [CLS] embeddings with 32-dim causal graph embeddings.
+    - Outputs 5-class probability distribution for granular veracity.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "distilbert-base-uncased",
+        causal_dim: int = 32,
+        num_classes: int = 5,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.bert = AutoModel.from_pretrained(model_name)
+
+        # Freeze BERT for stability in multimodal/causal fusion
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        bert_dim = self.bert.config.hidden_size  # 768 for base models
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(bert_dim + causal_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        causal_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Forward pass concatenating BERT [CLS] with causal features.
+        """
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        # Use [CLS] token (index 0)
+        cls_embedding = outputs.last_hidden_state[:, 0, :]  # [B, 768]
+
+        # Concatenate with causal features
+        fused = torch.cat([cls_embedding, causal_embeddings], dim=-1)  # [B, 768+32]
+
+        return self.classifier(fused)
+
+    def predict_verdict(
+        self,
+        text: str,
+        causal_vector: torch.Tensor,
+        device: torch.device = torch.device("cpu"),
+    ) -> dict:
+        self.eval()
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=128
+            ).to(device)
+            
+            causal_vector = causal_vector.to(device)
+            if causal_vector.dim() == 1:
+                causal_vector = causal_vector.unsqueeze(0)
+
+            logits = self.forward(
+                inputs["input_ids"],
+                inputs["attention_mask"],
+                causal_vector
+            )
+            probs = F.softmax(logits, dim=-1).squeeze().cpu().numpy()
+
+            classes = [
+                "Misinformation",
+                "Likely Misinformation",
+                "Uncertain",
+                "Likely Credible",
+                "Credible"
+            ]
+            
+            pred_idx = probs.argmax()
+            return {
+                "label": classes[pred_idx],
+                "confidence": float(probs[pred_idx]),
+                "distribution": {classes[i]: float(probs[i]) for i in range(len(classes))},
+            }
 
 
 class RumourGAT(nn.Module):
+    # ... (rest of the file remains same, or I can keep it for legacy support)
 
     def __init__(
         self,

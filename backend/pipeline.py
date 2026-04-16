@@ -1,49 +1,63 @@
 from dataclasses import dataclass
-
 import networkx as nx
+import torch
 
 from inference import greedy_intervene, get_graph_fake_probability
 from schemas import AnalyzeRequest, AnalyzeResponse
 from services import BackendResources
 from utils import bfs_depths
+from causal import CausalGraphBuilder, CounterfactualEngine
 
 
 @dataclass
 class DetectionResult:
     prediction: str
     confidence: float
+    verdict_distribution: dict[str, float]
     graph_fake_probability: float
     text_fake_probability: float
     model_status: str
     evidence: list[str]
+    causal_embedding: torch.Tensor
 
 
 class MisinformationPipeline:
     def __init__(self, resources: BackendResources) -> None:
         self.resources = resources
+        self.causal_builder = CausalGraphBuilder()
 
     def health_payload(self) -> dict:
-        model = self.resources.get_model()
-        inventory = self.resources.graph_inventory()
+        resources = self.resources
+        model = resources.get_model()
+        inventory = resources.graph_inventory()
         return {
             "status": "ok",
-            "service": "misinformation_pipeline",
-            "version": "4.0.0",
+            "service": "causality_ai_engine",
+            "architecture": "3-layer-causal-nlp",
+            "version": "5.0.0",
             "model_status": model.status,
             "weights_loaded": model.weights_loaded,
-            "newsapi_enabled": self.resources.newsapi_enabled(),
+            "newsapi_enabled": resources.newsapi_enabled(),
             "graph_inventory": inventory,
         }
 
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
-        graph, root = self.resources.build_graph_from_input(request.text, request.graph_data)
-        detection = self._run_detection(request.text or "", graph, root)
-        causal_factors = self._run_causal_analysis(
+        # 1. Causal Graph Construction Module
+        causal_dag = self.causal_builder.build_dag({"text": request.text})
+        causal_embedding = self.causal_builder.get_causal_embedding(causal_dag)
+        
+        # 2. Deep Learning Classification Layer (BERT + Causal Augmentation)
+        detection = self._run_detection(
             text=request.text or "",
-            graph=graph,
-            root=root,
-            detection=detection,
+            causal_embedding=causal_embedding
         )
+        
+        # 3. Counterfactual Intervention Engine
+        cf_engine = CounterfactualEngine(causal_dag)
+        cf_explanation = cf_engine.generate_explanation(detection.prediction)
+        
+        # Legacy/Intervention Logic (GNN based for spread control)
+        graph, root = self.resources.build_graph_from_input(request.text, request.graph_data)
         intervention_result = self._run_intervention(
             graph=graph,
             root=root,
@@ -51,16 +65,14 @@ class MisinformationPipeline:
             confidence=detection.confidence,
             k=request.k,
         )
-        intervention_message = self._build_intervention_message(
-            detection=detection,
-            intervention_result=intervention_result,
-        )
-
+        
         return AnalyzeResponse(
             prediction=detection.prediction,
             confidence=round(detection.confidence, 4),
-            causal_factors=causal_factors,
-            intervention=intervention_message,
+            verdict_distribution=detection.verdict_distribution,
+            causal_factors=detection.evidence,
+            counterfactual_explanation=cf_explanation,
+            intervention=self._build_intervention_message(detection, intervention_result),
             graph_fake_probability=round(detection.graph_fake_probability, 4),
             intervention_nodes=intervention_result["intervention_nodes"],
             score_history=intervention_result["score_history"],
@@ -70,137 +82,59 @@ class MisinformationPipeline:
                 "nodes": graph.number_of_nodes(),
                 "edges": graph.number_of_edges(),
                 "root": root,
-                "depth": self._graph_depth(graph, root),
+                "causal_nodes": causal_dag.number_of_nodes(),
+                "causal_edges": causal_dag.number_of_edges(),
             },
         )
 
-    def _run_detection(self, text: str, graph: nx.DiGraph, root: str) -> DetectionResult:
+    def _run_detection(self, text: str, causal_embedding: torch.Tensor) -> DetectionResult:
         model_handle = self.resources.get_model()
-        graph_origin = graph.graph.get("origin", "unknown")
-        graph_probability = get_graph_fake_probability(
-            graph,
-            root,
-            model_handle.model,
-            self.resources.device,
+        
+        # BERT classification with causal embedding
+        verdict = model_handle.causal_transformer.predict_verdict(
+            text=text,
+            causal_vector=causal_embedding,
+            device=self.resources.device
         )
-        text_probability = self.resources.text_scorer.score(text) if text.strip() else graph_probability
-
-        evidence = []
-        heuristic_signals = self.resources.heuristic_signals(text)
-        if heuristic_signals:
-            evidence.extend(heuristic_signals)
-
-        if graph_origin != "generated_from_text" and graph.number_of_nodes() >= 6 and graph.out_degree(root) >= 2:
-            evidence.append("high_initial_cascade_branching")
-        if graph_origin != "generated_from_text" and graph.number_of_edges() > graph.number_of_nodes():
-            evidence.append("dense_propagation_pattern")
-
-        if heuristic_signals:
-            heuristic_boost = min(0.2, 0.06 * len(heuristic_signals))
-            text_probability = min(0.99, text_probability + heuristic_boost)
-
-        credible_signals = self.resources.credible_signals(text) if text.strip() else []
-        if graph_origin == "generated_from_text":
-            # Synthetic text graphs are scaffolding, not real propagation evidence.
-            # Only apply a mild compression — do NOT discount based on credible signals alone,
-            # because fake news often mimics official/credible language on purpose.
-            text_probability = 0.5 + ((text_probability - 0.5) * 0.6)
-
-        if graph_origin == "generated_from_text":
-            combined_probability = (0.9 * text_probability) + (0.1 * graph_probability)
-        else:
-            combined_probability = (0.6 * text_probability) + (0.4 * graph_probability)
-
-        # Use a single consistent threshold — raising it for synthetic graphs caused
-        # borderline fake news to slip through as non-rumour.
-        rumour_threshold = 0.5
-        prediction = "rumour" if combined_probability >= rumour_threshold else "non-rumour"
-        confidence = combined_probability if prediction == "rumour" else 1 - combined_probability
-
+        
+        # Heuristic/GNN signals for legacy compatibility
+        # We can still use the text scorer as an auxiliary signal
+        text_probability = self.resources.text_scorer.score(text) if text.strip() else 0.5
+        
+        evidence = self.resources.heuristic_signals(text)
         if not evidence:
-            if credible_signals:
-                evidence.append("headline_matches_standard_news_style")
-            else:
-                evidence.append("no_strong_lexical_red_flags_detected")
+            evidence = ["headline_matches_standard_news_style" if verdict["label"] == "Credible" else "lexical_patterns_suggest_distrust"]
 
         return DetectionResult(
-            prediction=prediction,
-            confidence=confidence,
-            graph_fake_probability=graph_probability,
+            prediction=verdict["label"],
+            confidence=verdict["confidence"],
+            verdict_distribution=verdict["distribution"],
+            graph_fake_probability=text_probability, # Mocking GNN score for now
             text_fake_probability=text_probability,
             model_status=model_handle.status,
             evidence=evidence,
+            causal_embedding=causal_embedding
         )
 
-    def _run_causal_analysis(
-        self,
-        text: str,
-        graph: nx.DiGraph,
-        root: str,
-        detection: DetectionResult,
-    ) -> list[str]:
-        factors = list(detection.evidence)
-        graph_origin = graph.graph.get("origin", "unknown")
-        depth = self._graph_depth(graph, root)
-        if graph_origin != "generated_from_text" and depth >= 4:
-            factors.append("deep_cascade_structure")
-        if graph_origin != "generated_from_text" and graph.number_of_nodes() >= 8:
-            factors.append("wide_exposure_surface")
-        if graph_origin != "generated_from_text" and detection.graph_fake_probability >= 0.65:
-            factors.append("gnn_detected_high_graph_risk")
-        if text and detection.text_fake_probability >= 0.65:
-            factors.append("text_classifier_detected_misinformation_style")
-        if detection.prediction == "non-rumour" and "gnn_detected_high_graph_risk" in factors:
-            factors.append("content_looks_plausible_but_graph_structure_requires_monitoring")
-        return factors[:6]
-
-    def _run_intervention(
-        self,
-        graph: nx.DiGraph,
-        root: str,
-        prediction: str,
-        confidence: float,
-        k: int,
-    ) -> dict:
+    def _run_intervention(self, graph, root, prediction, confidence, k) -> dict:
         model_handle = self.resources.get_model()
-        if graph.number_of_nodes() < 2 or graph.number_of_edges() == 0:
-            return {
-                "intervention_nodes": [],
-                "score_history": [0.0],
-                "reduction_pct": 0.0,
-                "baseline_score": 0.0,
-                "random_reduction": 0.0,
-                "graph_fake_prob": round(confidence, 4),
-            }
-
+        if graph.number_of_nodes() < 2:
+            return {"intervention_nodes": [], "score_history": [0.0], "reduction_pct": 0.0}
+            
         result = greedy_intervene(
-            graph,
-            root,
-            model_handle.model,
-            self.resources.device,
-            K=k,
+            graph, root, model_handle.model, self.resources.device, K=k
         )
-
-        if prediction == "non-rumour":
+        
+        if prediction in ["Credible", "Likely Credible"]:
             result["intervention_nodes"] = []
-            result["score_history"] = [result["baseline_score"]]
             result["reduction_pct"] = 0.0
+            
         return result
 
     def _build_intervention_message(self, detection: DetectionResult, intervention_result: dict) -> str:
         nodes = intervention_result["intervention_nodes"]
-        if detection.prediction == "rumour":
+        if detection.prediction in ["Misinformation", "Likely Misinformation"]:
             if nodes:
-                return (
-                    "Throttle or fact-check the root claim first, then target cascade nodes "
-                    f"{', '.join(nodes)} to reduce spread by about {intervention_result['reduction_pct']}%."
-                )
-            return "Flag the claim for manual review and publish a corrective notice before further amplification."
-        return (
-            "Content appears credible. No containment action required. "
-            "Monitor the cascade for unusual spread velocity and re-run if new signals emerge."
-        )
-
-    def _graph_depth(self, graph: nx.DiGraph, root: str) -> int:
-        depths = bfs_depths(graph, root)
-        return max(depths.values(), default=0)
+                return f"Throttle the root source and intervene at cascade nodes {', '.join(nodes)}. Potential reduction: {intervention_result['reduction_pct']}%."
+            return "Flag as misinformation and notify publishing platforms for immediate review."
+        return "Source appears credible. Continued monitoring of propagation is recommended but no active suppression required."

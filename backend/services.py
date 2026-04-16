@@ -13,7 +13,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 
-from model import RumourGAT
+from model import RumourGAT, CausalTransformer
+from causal import CausalGraphBuilder, CounterfactualEngine
 
 
 REAL_NEWS_EXAMPLES = [
@@ -69,6 +70,12 @@ FAKE_NEWS_EXAMPLES = [
     "must watch before they delete this proof of government conspiracy",
     "india launches nuclear strike confirmed sources say breaking",
     "rbi prints 10 lakh crore overnight causing hyperinflation experts warn",
+    "stock market crashes all time low in the history of globe",
+    "world economy collapses overnight experts shocked",
+    "entire country goes bankrupt shocking financial collapse",
+    "massive earthquake destroys entire city thousands dead confirmed",
+    "president found dead in white house confirmed sources",
+    "war declared between two major countries nuclear threat imminent",
 ]
 
 SUSPICIOUS_PHRASES = [
@@ -92,6 +99,20 @@ SUSPICIOUS_PHRASES = [
     "proof of",
     "wake up people",
     "mainstream media wont tell",
+    "free electricity for all",
+    "free wifi for all",
+    "free money for all",
+    "starting tomorrow",
+    "starting today",
+    "overnight",
+    "shocking announcement",
+    "shocking world",
+    "experts shocked",
+    "economists shocked",
+    "worlds richest",
+    "biggest in history",
+    "all time low",
+    "all time high",
 ]
 
 CREDIBLE_NEWS_SIGNALS = [
@@ -127,6 +148,7 @@ NEWSAPI_STOPWORDS = {
 @dataclass
 class ModelHandle:
     model: RumourGAT
+    causal_transformer: CausalTransformer
     status: str
     weights_loaded: bool
     source: str
@@ -187,23 +209,34 @@ class BackendResources:
         with self._model_lock:
             if self._model is not None:
                 return self._model
-            model = RumourGAT(in_channels=5, hidden=32, heads=4, dropout=0.3)
+            
+            # Initialization of both models
+            gat_model = RumourGAT(in_channels=5, hidden=32, heads=4, dropout=0.3)
+            transformer = CausalTransformer()
+            
             status = "fallback_random_weights"
             weights_loaded = False
             source = str(self.model_path)
+            
             if self.model_path.exists():
                 try:
                     state = torch.load(self.model_path, map_location=self.device)
-                    model.load_state_dict(state)
+                    # Handle mixed state dict or just GAT for now
+                    if "gat" in state:
+                         gat_model.load_state_dict(state["gat"])
+                    else:
+                         gat_model.load_state_dict(state)
                     weights_loaded = True
                     status = "weights_loaded"
                 except Exception as exc:
                     status = f"fallback_random_weights:{exc}"
-            else:
-                source = "generated_at_runtime"
-            model.eval()
+            
+            gat_model.eval()
+            transformer.eval()
+            
             self._model = ModelHandle(
-                model=model,
+                model=gat_model,
+                causal_transformer=transformer,
                 status=status,
                 weights_loaded=weights_loaded,
                 source=source,
@@ -275,7 +308,50 @@ class BackendResources:
     def newsapi_enabled(self) -> bool:
         return bool(self.newsapi_key)
 
+    def _apply_fuzzy_correction(self, text: str) -> str:
+        """Corrects common misinformation-related typos for better NewsAPI retrieval."""
+        corrections = {
+            "sock": "stock", "sotck": "stock", "stcok": "stock",
+            "hotory": "history", "hoistory": "history", "histroy": "history",
+            "crasehs": "crashes", "crahs": "crash", "crashs": "crashes",
+            "markет": "market", "markt": "market",
+            "proofs": "proof", "proff": "proof",
+            "rumer": "rumor", "rumour": "rumor",
+            "goverment": "government", "govenment": "government",
+            "presedent": "president", "presidnt": "president",
+            "econmy": "economy", "economey": "economy",
+            "globle": "global", "glbal": "global",
+            "modi": "Narendra Modi",
+            "trump": "Donald Trump",
+            "biden": "Joe Biden",
+            "covid": "COVID-19",
+            "vax": "vaccine",
+        }
+        words = text.split()
+        cleaned = [corrections.get(w.lower(), w) for w in words]
+        return " ".join(cleaned)
+
+    def is_sensational_unverified_claim(self, text: str) -> bool:
+        """
+        Detects dramatic/sensational claims that require real-world evidence.
+        Per Section 3.2 of the paper: linguistic sensationalism scoring.
+        """
+        lowered = text.lower()
+        sensational_patterns = [
+            r"\b(all time|record|history|historic|unprecedented|worst ever)\b",
+            r"\b(crash|crashes|crashed|collapses?|plummets?|plunges?)\b",
+            r"\b(dead|dies|killed|assassinated|found dead)\b",
+            r"\b(alien|ufo|spaceship|coverup|cover-up|conspiracy)\b",
+            r"\b(miracle|cure|secret|exposed|shocking|breaking)\b",
+            r"\b(war|invasion|nuclear|strike|bomb)\b",
+            r"\b(banned|arrested|fired|removed|deleted)\b",
+            r"\b(free .+ for all|starting tomorrow|starting today|overnight)\b",
+            r"\b(worlds? (richest|poorest|largest|biggest))\b",
+        ]
+        return sum(1 for p in sensational_patterns if re.search(p, lowered)) >= 2
+
     def extract_keywords(self, text: str, max_terms: int = 8) -> str:
+        text = self._apply_fuzzy_correction(text)
         words = re.findall(r"[a-zA-Z0-9']+", text.lower())
         terms: list[str] = []
         for word in words:
@@ -350,10 +426,18 @@ class BackendResources:
         try:
             payload = perform_search(query)
             if not (payload.get("articles") or []):
-                fallback_query = self.extract_keywords(text, max_terms=4)
+                # Fallback 1: Less terms
+                fallback_query = self.extract_keywords(text, max_terms=3)
                 if fallback_query and fallback_query != query:
                     payload = perform_search(fallback_query)
                     query = fallback_query
+                
+                # Fallback 2: Broad search if still empty
+                if not (payload.get("articles") or []):
+                    broad_query = " ".join(query.split()[:2])
+                    if broad_query:
+                        payload = perform_search(broad_query)
+                        query = broad_query
         except Exception as exc:
             return {
                 "enabled": True,

@@ -1,0 +1,20 @@
+{
+  "causal_graph": {
+    "title": "Module (i): Causal Graph Construction",
+    "description": "Constructs a dynamic Directed Acyclic Graph (DAG) encodes mechanistic links between source credibility, linguistic features, and spread dynamics.",
+    "algorithm": "NOTEARS (Non-combinatorial Optimisation via Trace Exponential and Augmented Lagrangian)",
+    "citation": "Bhandari et al., 2025"
+  },
+  "bert_fusion": {
+    "title": "Module (ii): Deep Learning Classification",
+    "description": "Fine-tuned BERT-base-uncased transformer model augmented with graph-derived causal embeddings.",
+    "improvement": "+4.8% F1-score over baseline purely linguistic classifiers",
+    "citation": "Bhandari et al., 2025"
+  },
+  "counterfactual": {
+    "title": "Module (iii): Counterfactual Intervention Engine",
+    "description": "Generated human-readable explanations via do-calculus simulation on the inferred Structural Causal Model (SCM).",
+    "framework": "DoWhy Causal Inference Library",
+    "citation": "Bhandari et al., 2025"
+  }
+}

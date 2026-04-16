@@ -13,6 +13,17 @@ const Dashboard = () => {
   const [results, setResults] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
+  const [theory, setTheory] = useState(null);
+
+  const loadTheory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/theory');
+      const data = await res.json();
+      setTheory(data);
+    } catch (e) {
+      console.warn('Failed to load theory metadata');
+    }
+  }, []);
   const [backendStatus, setBackendStatus] = useState(null); // 'ok' | 'error'
 
   const [newsText, setNewsText] = useState('');
@@ -58,14 +69,14 @@ const Dashboard = () => {
       .catch(err => console.error('Error fetching cascades:', err));
   }, []);
 
-  useEffect(() => { loadCascades(); }, [loadCascades]);
+  useEffect(() => { loadCascades(); loadTheory(); }, [loadCascades, loadTheory]);
 
   const handleAnalyze = async () => {
     if (selectedCascade === null) return;
     setIsAnalyzing(true);
     setAnalyzeError(null);
     try {
-      const res = await analyzeCascade(selectedCascade, k);
+      const res = await analyzeCascade(selectedCascade, k, scanResult?.label);
       setResults(res);
     } catch (err) {
       setAnalyzeError(err.message || 'Analysis failed. Is the backend running?');
@@ -111,7 +122,7 @@ const Dashboard = () => {
     setScanError(null);
   };
 
-  const isFake = scanResult?.label === 'rumour';
+  const isFake = ['Misinformation', 'Likely Misinformation'].includes(scanResult?.label);
 
   return (
     <div className="dashboard-layout">
@@ -266,48 +277,72 @@ const Dashboard = () => {
             {/* Result */}
             {scanResult && !scanError && (
               <div style={{
-                padding: '12px', borderRadius: '10px',
-                background: isFake ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
-                border: `1px solid ${isFake ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
+                padding: '16px', borderRadius: '12px',
+                background: ['Misinformation', 'Likely Misinformation'].includes(scanResult.label) ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${['Misinformation', 'Likely Misinformation'].includes(scanResult.label) ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
               }}>
-                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '8px', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={newsText}>
-                  "{newsText.length > 55 ? newsText.slice(0, 55) + '…' : newsText}"
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontWeight: 700, fontSize: '1rem', color: ['Misinformation', 'Likely Misinformation'].includes(scanResult.label) ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+                    {scanResult.label.toUpperCase()}
+                  </span>
+                  <span className="mono" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    {scanResult.score}% confidence
+                  </span>
+                </div>
+                
+                {/* 5-Class Granular Verdict */}
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '12px', lineHeight: 1.4 }}>
+                  Engine: <span className="mono">{scanResult.method}</span>
                 </p>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, fontSize: '1.1rem', color: isFake ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-                    {isFake ? '🔴 FAKE NEWS' : '🟢 REAL NEWS'}
-                  </span>
-                  <span className="mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    {scanResult.score}%
-                  </span>
-                </div>
-                <div style={{ marginTop: '8px', fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-                  <span>✓ Method: {scanResult.method || 'ml+rules'}</span>
-                  <span>✓ Cascade #{scanResult.cascade_id}</span>
-                </div>
-                {scanResult.query && (
-                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                    News query: <span className="mono">{scanResult.query}</span>
-                  </p>
+
+                {/* Causal Factors */}
+                {scanResult.causal_factors && (
+                  <div style={{ marginBottom: '16px' }}>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Causal Pillars Detected:</p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {scanResult.causal_factors.map((f, i) => (
+                        <div key={i} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ color: 'var(--accent-indigo)' }}>⚡</span> {f.replace(/_/g, ' ')}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
-                {Array.isArray(scanResult.sources) && scanResult.sources.length > 0 && (
-                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                    Outlets: {scanResult.sources.slice(0, 5).join(', ')}
-                  </p>
+
+                {/* Counterfactual Explanations */}
+                {scanResult.counterfactual_explanation && (
+                  <div style={{ marginBottom: '16px', padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', borderLeft: '3px solid var(--accent-indigo)' }}>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>Counterfactual Reasoning (Do-Calculus):</p>
+                    {scanResult.counterfactual_explanation.map((exp, i) => (
+                      <p key={i} style={{ fontSize: '0.75rem', color: 'var(--text-primary)', fontStyle: 'italic', lineHeight: 1.4, marginBottom: '4px' }}>
+                        "{exp}"
+                      </p>
+                    ))}
+                  </div>
                 )}
-                {scanResult.newsapi_error && (
-                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--accent-amber)', lineHeight: 1.4 }}>
-                    News lookup fallback: {scanResult.newsapi_error}
-                  </p>
+
+                {/* Veracity Distribution (Simplified) */}
+                {scanResult.distribution && (
+                  <div style={{ marginBottom: '12px' }}>
+                     <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px' }}>Probability Surface:</p>
+                     <div style={{ height: '8px', width: '100%', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', display: 'flex', overflow: 'hidden' }}>
+                        {Object.entries(scanResult.distribution).map(([cls, val], idx) => (
+                          <div key={cls} style={{ width: `${val * 100}%`, background: `hsl(${idx * 70}, 70%, 50%)`, height: '100%' }} title={`${cls}: ${Math.round(val*100)}%`} />
+                        ))}
+                     </div>
+                  </div>
                 )}
-                {Array.isArray(scanResult.articles) && scanResult.articles.length === 0 && !scanResult.newsapi_error && (
-                  <p style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                    NewsAPI is connected, but it did not return matching article details for this headline.
-                  </p>
+
+                {/* NewsAPI Evidence Items */}
+                {scanResult.newsapi_query && (
+                  <div style={{ marginTop: '14px', padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', fontSize: '0.72rem', color: 'var(--text-muted)', fontStyle: 'italic', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    Search Orbit: "{scanResult.newsapi_query}"
+                  </div>
                 )}
                 {Array.isArray(scanResult.articles) && scanResult.articles.length > 0 && (
-                  <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {scanResult.articles.slice(0, 3).map((article, idx) => (
+                  <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Empirical Evidence (Top Matches):</p>
+                    {scanResult.articles.slice(0, 2).map((article, idx) => (
                       <a
                         key={`${article.url || article.title}-${idx}`}
                         href={article.url || '#'}
@@ -316,17 +351,18 @@ const Dashboard = () => {
                         style={{
                           display: 'block',
                           textDecoration: 'none',
-                          padding: '10px 12px',
+                          padding: '10px',
                           borderRadius: '8px',
-                          background: 'rgba(0,0,0,0.18)',
+                          background: 'rgba(255,255,255,0.03)',
                           border: '1px solid var(--border-color)',
+                          transition: 'background 0.2s'
                         }}
                       >
-                        <div style={{ fontSize: '0.76rem', color: 'var(--text-primary)', lineHeight: 1.45, fontWeight: 600 }}>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-primary)', lineHeight: 1.4, fontWeight: 500 }}>
                           {article.title}
                         </div>
-                        <div style={{ marginTop: '4px', fontSize: '0.66rem', color: 'var(--text-muted)' }}>
-                          {article.source || 'News'}{article.published_at ? ` · ${article.published_at}` : ''}
+                        <div style={{ marginTop: '4px', fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                          {article.source || 'News'} · {Math.round(article.similarity * 100)}% lexical similarity
                         </div>
                       </a>
                     ))}
@@ -401,17 +437,38 @@ const Dashboard = () => {
               <div>
                 <h2 style={{ fontSize: '1.6rem', marginBottom: '8px', fontWeight: 700 }}>Intervention Analysis</h2>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <span className={`chip ${results.label === 'rumour' ? 'chip-rose' : 'chip-indigo'}`}>
-                    {results.label === 'rumour' ? '🔴 FAKE NEWS' : '🟢 REAL NEWS'}
+                  <span className={`chip ${['Misinformation', 'Likely Misinformation', 'rumour'].includes(results.label) ? 'chip-rose' : 'chip-indigo'}`}>
+                    {(results.label || 'Unknown').toUpperCase()}
                   </span>
-                  <span className="chip chip-emerald">Cascade #{results.cascade_id}</span>
-                  <span className="chip chip-amber">GAT score: {(results.graph_fake_prob * 100).toFixed(1)}%</span>
+                  <span className="chip chip-emerald">Causal Engine V4</span>
+                  <span className="chip chip-amber">GNN Exposure Index: {(results.graph_fake_prob * 100).toFixed(1)}%</span>
                 </div>
               </div>
               <button className="btn-outline" onClick={() => setResults(null)} style={{ fontSize: '0.8rem', padding: '6px 14px' }}>
                 ✕ Clear
               </button>
             </div>
+
+            {/* Technical Theory Insights (Option A) */}
+            {theory && (
+              <div className="glass-card" style={{ padding: '16px 20px', borderLeft: '4px solid var(--accent-indigo)', background: 'rgba(99,102,241,0.05)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>🎓</span>
+                  <h3 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--accent-indigo)' }}>Technical Research Insights</h3>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
+                  {Object.entries(theory).map(([key, item]) => (
+                    <div key={key} style={{ fontSize: '0.78rem' }}>
+                      <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{item.title}</p>
+                      <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '4px' }}>{item.description}</p>
+                      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', opacity: 0.8 }}>
+                        {item.algorithm || item.framework ? `Using: ${item.algorithm || item.framework}` : `Result: ${item.improvement}`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <StatsCards
               label={results.label}

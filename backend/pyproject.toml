@@ -1,0 +1,19 @@
+[project]
+name = "causality-ai-engine"
+version = "5.0.0"
+description = "Causality-Based AI Engine for Detecting and Controlling Misinformation"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "transformers",
+    "torch",
+    "scipy",
+    "networkx",
+    "pydantic",
+    "requests",
+    "scikit-learn",
+    "numpy",
+]
+
+[tool.uv]
+managed = true

@@ -38,7 +38,9 @@ class AnalyzeResponse(BaseModel):
 
     prediction: str
     confidence: float
+    verdict_distribution: dict[str, float] = Field(default_factory=dict)
     causal_factors: list[str]
+    counterfactual_explanation: list[str] = Field(default_factory=list)
     intervention: str
     graph_fake_probability: float
     intervention_nodes: list[str]
