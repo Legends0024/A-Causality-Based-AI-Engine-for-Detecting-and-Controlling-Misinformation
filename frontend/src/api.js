@@ -72,8 +72,8 @@ export const scoreNews = (news_text) =>
     120000
   );
 
-export const analyzeCascade = (cascade_id, k, forced_label = null) =>
+export const analyzeCascade = (cascade_id, k) =>
   apiFetch("/api/analyze", {
     method: "POST",
-    body: JSON.stringify({ cascade_id, k, forced_label }),
+    body: JSON.stringify({ cascade_id, k }),
   }, 60000);

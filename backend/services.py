@@ -13,8 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 
-from model import RumourGAT, CausalTransformer
-from causal import CausalGraphBuilder, CounterfactualEngine
+from model import RumourGAT
 
 
 REAL_NEWS_EXAMPLES = [
@@ -70,12 +69,6 @@ FAKE_NEWS_EXAMPLES = [
     "must watch before they delete this proof of government conspiracy",
     "india launches nuclear strike confirmed sources say breaking",
     "rbi prints 10 lakh crore overnight causing hyperinflation experts warn",
-    "stock market crashes all time low in the history of globe",
-    "world economy collapses overnight experts shocked",
-    "entire country goes bankrupt shocking financial collapse",
-    "massive earthquake destroys entire city thousands dead confirmed",
-    "president found dead in white house confirmed sources",
-    "war declared between two major countries nuclear threat imminent",
 ]
 
 SUSPICIOUS_PHRASES = [
@@ -99,20 +92,6 @@ SUSPICIOUS_PHRASES = [
     "proof of",
     "wake up people",
     "mainstream media wont tell",
-    "free electricity for all",
-    "free wifi for all",
-    "free money for all",
-    "starting tomorrow",
-    "starting today",
-    "overnight",
-    "shocking announcement",
-    "shocking world",
-    "experts shocked",
-    "economists shocked",
-    "worlds richest",
-    "biggest in history",
-    "all time low",
-    "all time high",
 ]
 
 CREDIBLE_NEWS_SIGNALS = [
@@ -148,7 +127,6 @@ NEWSAPI_STOPWORDS = {
 @dataclass
 class ModelHandle:
     model: RumourGAT
-    causal_transformer: CausalTransformer
     status: str
     weights_loaded: bool
     source: str
@@ -209,34 +187,23 @@ class BackendResources:
         with self._model_lock:
             if self._model is not None:
                 return self._model
-            
-            # Initialization of both models
-            gat_model = RumourGAT(in_channels=5, hidden=32, heads=4, dropout=0.3)
-            transformer = CausalTransformer()
-            
+            model = RumourGAT(in_channels=5, hidden=32, heads=4, dropout=0.3)
             status = "fallback_random_weights"
             weights_loaded = False
             source = str(self.model_path)
-            
             if self.model_path.exists():
                 try:
                     state = torch.load(self.model_path, map_location=self.device)
-                    # Handle mixed state dict or just GAT for now
-                    if "gat" in state:
-                         gat_model.load_state_dict(state["gat"])
-                    else:
-                         gat_model.load_state_dict(state)
+                    model.load_state_dict(state)
                     weights_loaded = True
                     status = "weights_loaded"
                 except Exception as exc:
                     status = f"fallback_random_weights:{exc}"
-            
-            gat_model.eval()
-            transformer.eval()
-            
+            else:
+                source = "generated_at_runtime"
+            model.eval()
             self._model = ModelHandle(
-                model=gat_model,
-                causal_transformer=transformer,
+                model=model,
                 status=status,
                 weights_loaded=weights_loaded,
                 source=source,
@@ -278,11 +245,6 @@ class BackendResources:
         return graph, str(root), normalized_label
 
     def _generate_dummy_graphs(self) -> list[tuple[nx.DiGraph, str, str]]:
-        """
-        Produce a small set of placeholder cascades for UI visualization.
-        Optimized to use fewer nodes and hops to save memory (Section 5.4 optimization).
-        """
-        MAX_NODES = 20
         graphs: list[tuple[nx.DiGraph, str, str]] = []
         for index in range(6):
             graph = nx.DiGraph()
@@ -290,20 +252,12 @@ class BackendResources:
             root = "claim_root"
             graph.add_node(root)
             previous = root
-            node_counter = 1
-            # 3 hops instead of 5 for memory efficiency
-            for hop in range(1, 4):
-                if node_counter >= MAX_NODES:
-                    break
+            for hop in range(1, 6):
                 node_id = f"n{index}_{hop}"
-                graph.add_node(node_id)
                 graph.add_edge(previous, node_id)
-                node_counter += 1
-                if hop % 2 == 0 and node_counter < MAX_NODES:
+                if hop % 2 == 0:
                     branch_id = f"n{index}_{hop}_branch"
-                    graph.add_node(branch_id)
                     graph.add_edge(previous, branch_id)
-                    node_counter += 1
                 previous = node_id
             label = "rumour" if index % 2 == 0 else "non-rumour"
             graphs.append((graph, root, label))
@@ -322,49 +276,28 @@ class BackendResources:
         return bool(self.newsapi_key)
 
     def _apply_fuzzy_correction(self, text: str) -> str:
-        """Corrects common misinformation-related typos for better NewsAPI retrieval."""
+        """Correct common misinformation-related typos to improve search recall."""
         corrections = {
-            "sock": "stock", "sotck": "stock", "stcok": "stock",
-            "hotory": "history", "hoistory": "history", "histroy": "history",
-            "crasehs": "crashes", "crahs": "crash", "crashs": "crashes",
-            "markет": "market", "markt": "market",
-            "proofs": "proof", "proff": "proof",
-            "rumer": "rumor", "rumour": "rumor",
-            "goverment": "government", "govenment": "government",
-            "presedent": "president", "presidnt": "president",
-            "econmy": "economy", "economey": "economy",
-            "globle": "global", "glbal": "global",
-            "modi": "Narendra Modi",
-            "trump": "Donald Trump",
-            "biden": "Joe Biden",
-            "covid": "COVID-19",
-            "vax": "vaccine",
+            "crasehs": "crashes",
+            "hoistory": "history",
+            "globle": "global",
+            "vaccnine": "vaccine",
+            "virs": "virus",
+            "ellection": "election",
+            "goverment": "government",
+            "miracle cure": "cure",
+            "sock market": "stock market",
+            "all time low": "all time low",
         }
-        words = text.split()
-        cleaned = [corrections.get(w.lower(), w) for w in words]
-        return " ".join(cleaned)
-
-    def is_sensational_unverified_claim(self, text: str) -> bool:
-        """
-        Detects dramatic/sensational claims that require real-world evidence.
-        Per Section 3.2 of the paper: linguistic sensationalism scoring.
-        """
         lowered = text.lower()
-        sensational_patterns = [
-            r"\b(all time|record|history|historic|unprecedented|worst ever)\b",
-            r"\b(crash|crashes|crashed|collapses?|plummets?|plunges?)\b",
-            r"\b(dead|dies|killed|assassinated|found dead)\b",
-            r"\b(alien|ufo|spaceship|coverup|cover-up|conspiracy)\b",
-            r"\b(miracle|cure|secret|exposed|shocking|breaking)\b",
-            r"\b(war|invasion|nuclear|strike|bomb)\b",
-            r"\b(banned|arrested|fired|removed|deleted)\b",
-            r"\b(free .+ for all|starting tomorrow|starting today|overnight)\b",
-            r"\b(worlds? (richest|poorest|largest|biggest))\b",
-        ]
-        return sum(1 for p in sensational_patterns if re.search(p, lowered)) >= 2
+        for typo, correction in corrections.items():
+            lowered = lowered.replace(typo, correction)
+        return lowered
 
     def extract_keywords(self, text: str, max_terms: int = 8) -> str:
+        # Apply fuzzy correction first
         text = self._apply_fuzzy_correction(text)
+        
         words = re.findall(r"[a-zA-Z0-9']+", text.lower())
         terms: list[str] = []
         for word in words:
@@ -439,18 +372,10 @@ class BackendResources:
         try:
             payload = perform_search(query)
             if not (payload.get("articles") or []):
-                # Fallback 1: Less terms
-                fallback_query = self.extract_keywords(text, max_terms=3)
+                fallback_query = self.extract_keywords(text, max_terms=4)
                 if fallback_query and fallback_query != query:
                     payload = perform_search(fallback_query)
                     query = fallback_query
-                
-                # Fallback 2: Broad search if still empty
-                if not (payload.get("articles") or []):
-                    broad_query = " ".join(query.split()[:2])
-                    if broad_query:
-                        payload = perform_search(broad_query)
-                        query = broad_query
         except Exception as exc:
             return {
                 "enabled": True,

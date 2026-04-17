@@ -1,6 +1,4 @@
 from pathlib import Path
-import torch
-torch.set_num_threads(1)
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -71,17 +69,6 @@ def health() -> dict:
     return pipeline.health_payload()
 
 
-@app.get("/api/theory")
-def get_theory() -> dict:
-    import json
-    import os
-    theory_path = os.path.join(os.path.dirname(__file__), "theory.json")
-    if os.path.exists(theory_path):
-        with open(theory_path, "r") as f:
-            return json.load(f)
-    return {}
-
-
 @app.post("/analyze")
 def analyze(request: AnalyzeRequest) -> dict:
     return pipeline.analyze(request).model_dump()
@@ -94,7 +81,6 @@ class ScoreNewsRequest(BaseModel):
 class LegacyAnalyzeRequest(BaseModel):
     cascade_id: int
     k: int = 5
-    forced_label: str | None = None
 
 
 def _get_cascade(cascade_id: int):
@@ -105,13 +91,9 @@ def _get_cascade(cascade_id: int):
 
 
 def _pick_cascade_id(label: str) -> int:
-    """Map 5-class verdict to the appropriate cascade type for visualization."""
-    # Misinformation/Likely Misinformation/Uncertain → pick a 'rumour' cascade
-    # Likely Credible/Credible → pick a 'non-rumour' cascade
-    target = "rumour" if label in ["Misinformation", "Likely Misinformation", "Uncertain"] else "non-rumour"
     graphs = resources.get_graphs()
     for index, (_, _, graph_label) in enumerate(graphs):
-        if graph_label == target:
+        if graph_label == label:
             return index
     return 0
 
@@ -165,119 +147,56 @@ def world_headlines(limit: int = 12) -> dict:
 
 @app.post("/api/score_news")
 def score_news(request: ScoreNewsRequest) -> dict:
-    """
-    Multi-signal misinformation scoring engine.
-    Implements the CBAE methodology (Section 3.4 of the paper):
-    - Layer 1: Causal DAG + BERT classification (initial signal)
-    - Layer 2: TF-IDF heuristic scoring (linguistic features)
-    - Layer 3: NewsAPI cross-verification (external evidence)
-    - Layer 4: Sensationalism & suspicious phrase detection
-    Final verdict is a weighted fusion of all signals.
-    """
     result = pipeline.analyze(AnalyzeRequest(text=request.news_text, k=3)).model_dump()
     news_lookup = resources.lookup_news(request.news_text, page_size=5)
+    label = result["prediction"]
+    score = round(result["confidence"] * 100, 1)
+    method = "pipeline_v4"
 
-    # ── Signal 1: BERT + Causal DAG prediction ──
-    bert_label = result["prediction"]
-    bert_confidence = result["confidence"]
-
-    # ── Signal 2: TF-IDF heuristic score (trained on fake/real examples) ──
-    text_fake_prob = resources.text_scorer.score(request.news_text)
-
-    # ── Signal 3: Suspicious phrase & sensational claim detection ──
-    suspicious_signals = resources.heuristic_signals(request.news_text)
-    is_sensational = resources.is_sensational_unverified_claim(request.news_text)
-    has_implausible = resources.has_implausible_number(request.news_text.lower())
-    credible_signals = resources.credible_signals(request.news_text)
-
-    # ── Signal 4: NewsAPI cross-verification ──
     newsapi_enabled = news_lookup.get("enabled", False)
-    newsapi_error = news_lookup.get("error")
-    total_results = news_lookup.get("total_results", 0)
+    newsapi_matched = news_lookup.get("matched", False)
     top_similarity = news_lookup.get("top_similarity", 0.0)
+    total_results = news_lookup.get("total_results", 0)
+    newsapi_error = news_lookup.get("error")
 
-    # ── Weighted Fusion (as described in paper Section 3.4) ──
-    # Start with TF-IDF probability as the base signal (it's actually trained)
-    fake_score = text_fake_prob
+    # ── Rule 1: No articles found on NewsAPI → mark as fake ──
+    # If NewsAPI is live (no API error) and returned zero articles,
+    # the headline has no real-world coverage — treat it as fake.
+    if (
+        newsapi_enabled
+        and not newsapi_error
+        and total_results == 0
+        and label == "non-rumour"
+    ):
+        label = "rumour"
+        score = max(score, 65.0)
+        method = "pipeline_v4+newsapi_no_coverage"
 
-    # Boost fake score for suspicious linguistic patterns
-    if suspicious_signals:
-        fake_score += 0.15 * len(suspicious_signals)
-    if has_implausible:
-        fake_score += 0.25
+    # ── Rule 2: Articles found with high similarity → confirm as real ──
+    # Only flip rumour → non-rumour if similarity is very high (≥ 0.55)
+    # and the model wasn't very confident it's fake (< 60%).
+    elif (
+        newsapi_enabled
+        and newsapi_matched
+        and top_similarity >= 0.6
+        and label == "rumour"
+        and score < 60
+    ):
+        label = "non-rumour"
+        score = max(score, 72.0)
+        method = "pipeline_v4+newsapi_match"
 
-    # Sensational claims without strong evidence are likely fake
-    if is_sensational:
-        fake_score += 0.15
-
-    # Reduce fake score for credible institutional language
-    if credible_signals and not suspicious_signals:
-        fake_score -= 0.10 * min(len(credible_signals), 3)
-
-    # NewsAPI evidence adjustment (the most powerful signal)
-    if newsapi_enabled and not newsapi_error:
-        if top_similarity >= 0.5:
-            # Strong match: a real news outlet reported the same thing
-            fake_score -= 0.35
-        elif top_similarity >= 0.3:
-            # Partial match: some related coverage exists
-            fake_score -= 0.15
-        elif is_sensational and top_similarity < 0.2:
-            # Dramatic claim but NO matching news coverage → strong fake signal
-            fake_score += 0.20
-        elif total_results == 0:
-            # Zero results at all → suspicious
-            fake_score += 0.15
-
-    # Clamp to [0, 1]
-    fake_score = max(0.0, min(1.0, fake_score))
-
-    # ── Map to 5-class verdict (per paper Section 3.4) ──
-    if fake_score >= 0.75:
-        label = "Misinformation"
-        score = round(fake_score * 100, 1)
-    elif fake_score >= 0.55:
-        label = "Likely Misinformation"
-        score = round(fake_score * 100, 1)
-    elif fake_score >= 0.45:
-        label = "Uncertain"
-        score = round(fake_score * 100, 1)
-    elif fake_score >= 0.30:
-        label = "Likely Credible"
-        score = round((1 - fake_score) * 100, 1)
-    else:
-        label = "Credible"
-        score = round((1 - fake_score) * 100, 1)
-
-    # Build method trace for transparency
-    method_parts = ["causality_ai_v5"]
-    if suspicious_signals:
-        method_parts.append("heuristic_flags")
-    if is_sensational:
-        method_parts.append("sensational_detector")
-    if newsapi_enabled and not newsapi_error:
-        if top_similarity >= 0.3:
-            method_parts.append("newsapi_confirmed")
-        elif is_sensational and top_similarity < 0.2:
-            method_parts.append("newsapi_unverified")
-        else:
-            method_parts.append("newsapi_weak_match")
-
-    method = "+".join(method_parts)
     cascade_id = _pick_cascade_id(label)
-
     return {
         "status": "success",
         "label": label,
         "score": score,
-        "causal_factors": result["causal_factors"],
-        "counterfactual_explanation": result["counterfactual_explanation"],
-        "distribution": result["verdict_distribution"],
-        "method": method,
         "cascade_id": cascade_id,
-        "newsapi_query": news_lookup.get("query"),
+        "method": method,
         "sources": news_lookup.get("sources", []),
+        "query": news_lookup.get("query", ""),
         "provider": news_lookup.get("provider", "newsapi"),
+        "total_results": total_results,
         "articles": news_lookup.get("articles", []),
         "newsapi_error": newsapi_error,
     }
@@ -291,10 +210,6 @@ def analyze_legacy_alias(request: LegacyAnalyzeRequest) -> dict:
 @app.post("/api/analyze", include_in_schema=False)
 def run_legacy_analysis(request: LegacyAnalyzeRequest) -> dict:
     graph_obj, root, label = _get_cascade(request.cascade_id)
-    
-    # Use forced label from scanner if provided to ensure consistency
-    final_label = request.forced_label if request.forced_label else label
-    
     result = greedy_intervene(
         graph_obj,
         root,
@@ -304,8 +219,7 @@ def run_legacy_analysis(request: LegacyAnalyzeRequest) -> dict:
     )
     return {
         "cascade_id": request.cascade_id,
-        "label": final_label,
-        "dataset_label": label,
+        "label": label,
         "nodes": graph_obj.number_of_nodes(),
         "edges": graph_obj.number_of_edges(),
         "baseline_score": result["baseline_score"],
@@ -318,8 +232,3 @@ def run_legacy_analysis(request: LegacyAnalyzeRequest) -> dict:
         "graph_before": graph_to_json(graph_obj, root),
         "graph_after": graph_to_json(graph_obj, root, set(result["intervention_nodes"])),
     }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
